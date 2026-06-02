@@ -1,0 +1,58 @@
+// prisma/schema.prisma
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum ClassLevel {
+  IDAADIY
+  IBTIDAAIY
+}
+
+model Student {
+  id              String          @id @default(uuid())
+  fullName        String
+  phone           String          @unique // Acts as login password
+  appliedClass    ClassLevel
+  isExamTaken     Boolean         @default(false)
+  examStartedAt   DateTime?       // To enforce strict server-side timing
+  finalScore      Float?
+  placementStatus String?
+  answers         StudentAnswer[]
+  logs            ExamLog[]
+  createdAt       DateTime        @default(now())
+}
+
+model Question {
+  id            String          @id @default(uuid())
+  classLevel    ClassLevel
+  subject       String          // e.g., "Fiqh", "Tawheed", "Arabic"
+  questionText  String
+  options       Json            // Array of 4 strings
+  correctAnswer String          // The exact correct string
+  answers       StudentAnswer[]
+}
+
+model StudentAnswer {
+  id             String   @id @default(uuid())
+  studentId      String
+  questionId     String
+  selectedOption String
+  student        Student  @relation(fields: [studentId], references: [id])
+  question       Question @relation(fields: [questionId], references: [id])
+
+  @@unique([studentId, questionId]) // A student can only have one saved answer per question
+}
+
+model ExamLog {
+  id        String   @id @default(uuid())
+  studentId String
+  eventType String   // e.g., "TAB_SWITCH", "LOOKED_AWAY", "LOST_FOCUS"
+  timestamp DateTime @default(now())
+  student   Student  @relation(fields: [studentId], references: [id])
+}

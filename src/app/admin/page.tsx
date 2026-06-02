@@ -1,8 +1,7 @@
 // src/app/admin/page.tsx
 "use client";
 
-import { useState, useEffect } from "react";
-import { useRouter } from "next/navigation";
+import { useState, useEffect, useRef } from "react";
 
 interface ExamLog {
   id: string;
@@ -23,12 +22,37 @@ interface StudentMonitor {
   recentLogs: ExamLog[];
 }
 
+// Helper component to securely attach MediaStreams to video tags in React
+const StreamPlayer = ({ stream }: { stream: MediaStream }) => {
+  const videoRef = useRef<HTMLVideoElement>(null);
+  
+  useEffect(() => {
+    if (videoRef.current && stream) {
+      videoRef.current.srcObject = stream;
+    }
+  }, [stream]);
+
+  return (
+    <video 
+      ref={videoRef} 
+      autoPlay 
+      playsInline 
+      muted 
+      className="absolute inset-0 w-full h-full object-cover filter contrast-125 brightness-90 z-0" 
+    />
+  );
+};
+
 export default function AdminDashboard() {
-  const router = useRouter();
   const [students, setStudents] = useState<StudentMonitor[]>([]);
   const [loading, setLoading] = useState(true);
+  
+  // WebRTC States
+  const [streams, setStreams] = useState<Record<string, MediaStream>>({});
+  const peerInstance = useRef<any>(null);
+  const activeCalls = useRef<Set<string>>(new Set());
 
-  // Poll the database every 3 seconds for live updates
+  // 1. Poll the database for infractions and status updates
   useEffect(() => {
     const fetchDashboardData = async () => {
       try {
@@ -44,12 +68,65 @@ export default function AdminDashboard() {
       }
     };
 
-    fetchDashboardData(); // Initial fetch
-    const interval = setInterval(fetchDashboardData, 3000); // Live polling loop
+    fetchDashboardData();
+    const interval = setInterval(fetchDashboardData, 3000);
     return () => clearInterval(interval);
   }, []);
 
-  // Calculate top-level statistics
+  // 2. Initialize the Admin's WebRTC Receiver
+  useEffect(() => {
+    let peer: any;
+    const initPeer = async () => {
+      const { Peer } = await import("peerjs");
+      peer = new Peer("mutoon-admin"); // Dedicated Admin ID
+      peerInstance.current = peer;
+    };
+    initPeer();
+
+    return () => {
+      if (peer) peer.destroy();
+    };
+  }, []);
+
+  // 3. Connect to students when they come online
+  useEffect(() => {
+    if (!peerInstance.current || students.length === 0) return;
+
+    // Generate a 1-pixel dummy stream to satisfy WebRTC's calling requirements
+    const canvas = document.createElement("canvas");
+    canvas.width = 1;
+    canvas.height = 1;
+    const dummyStream = canvas.captureStream(1);
+
+    students.forEach((student) => {
+      if (student.status === "ACTIVE" && !activeCalls.current.has(student.id)) {
+        activeCalls.current.add(student.id);
+
+        // Call the specific student's ID
+        const call = peerInstance.current.call(`mutoon-${student.id}`, dummyStream);
+
+        if (call) {
+          call.on("stream", (remoteStream: MediaStream) => {
+            setStreams((prev) => ({ ...prev, [student.id]: remoteStream }));
+          });
+
+          call.on("close", () => {
+            setStreams((prev) => {
+              const newStreams = { ...prev };
+              delete newStreams[student.id];
+              return newStreams;
+            });
+            activeCalls.current.delete(student.id);
+          });
+          
+          call.on("error", () => {
+             activeCalls.current.delete(student.id);
+          });
+        }
+      }
+    });
+  }, [students]);
+
   const activeCount = students.filter(s => s.status === "ACTIVE").length;
   const completedCount = students.filter(s => s.status === "COMPLETED").length;
   const criticalAlerts = students.filter(s => s.infractionCount > 0).length;
@@ -79,7 +156,6 @@ export default function AdminDashboard() {
           </div>
         </div>
 
-        {/* Live Statistics Widgets */}
         <div className="hidden md:flex items-center gap-4">
           <div className="bg-[#000818] border border-white/5 px-5 py-2 rounded-xl flex flex-col items-center">
             <span className="text-[10px] uppercase font-bold text-gray-500 tracking-widest">Active Sessions</span>
@@ -120,23 +196,30 @@ export default function AdminDashboard() {
                 
                 {/* Simulated Video Stream Area */}
                 <div className="relative w-full aspect-video bg-[#000818] border-b border-white/5 flex flex-col items-center justify-center overflow-hidden">
+                  
                   {student.status === "PENDING" && (
-                    <span className="text-xs text-gray-600 font-bold uppercase tracking-widest">Offline</span>
+                    <span className="text-xs text-gray-600 font-bold uppercase tracking-widest z-10">Offline</span>
                   )}
+                  
                   {student.status === "ACTIVE" && (
                     <>
-                      {/* WebRTC Video Placeholder */}
-                      <div className="absolute inset-0 bg-[#001232] mix-blend-screen opacity-50 flex items-center justify-center">
-                         <div className="w-full h-full opacity-20 bg-[radial-gradient(circle_at_center,_var(--tw-gradient-stops))] from-[#ffb902] via-transparent to-transparent"></div>
-                      </div>
-                      <span className="text-xs text-[#ffb902] font-bold uppercase tracking-widest z-10 flex items-center gap-2">
-                        <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse"></span>
-                        Live Stream
+                      {streams[student.id] ? (
+                        <StreamPlayer stream={streams[student.id]} />
+                      ) : (
+                        <div className="absolute inset-0 bg-[#001232] mix-blend-screen opacity-50 flex items-center justify-center z-0">
+                          <div className="w-full h-full opacity-20 bg-[radial-gradient(circle_at_center,_var(--tw-gradient-stops))] from-[#ffb902] via-transparent to-transparent"></div>
+                        </div>
+                      )}
+                      
+                      <span className="absolute bottom-2 left-2 text-[10px] text-white font-bold uppercase tracking-widest z-10 flex items-center gap-1.5 bg-black/60 px-2 py-1 rounded-md backdrop-blur-sm">
+                        <span className={`w-1.5 h-1.5 rounded-full ${streams[student.id] ? "bg-red-500 animate-pulse" : "bg-[#ffb902]"}`}></span>
+                        {streams[student.id] ? "LIVE" : "CONNECTING..."}
                       </span>
                     </>
                   )}
+                  
                   {isFinished && (
-                    <div className="flex flex-col items-center">
+                    <div className="flex flex-col items-center z-10">
                       <span className="text-3xl font-black text-emerald-400">{student.finalScore}%</span>
                       <span className="text-[10px] text-emerald-500/70 uppercase font-bold tracking-widest mt-1">Score Logged</span>
                     </div>
@@ -144,14 +227,14 @@ export default function AdminDashboard() {
 
                   {/* Anti-Cheat Alert Overlay */}
                   {isCheating && (
-                    <div className="absolute top-2 right-2 bg-red-500 text-white text-[10px] font-bold px-2 py-1 rounded-md uppercase tracking-wider animate-pulse shadow-lg">
+                    <div className="absolute top-2 right-2 bg-red-500 text-white text-[10px] font-bold px-2 py-1 rounded-md uppercase tracking-wider animate-pulse shadow-lg z-20">
                       {student.infractionCount} Flags
                     </div>
                   )}
                 </div>
 
                 {/* Student Info Card */}
-                <div className="p-4 flex flex-col flex-1 bg-gradient-to-b from-transparent to-[#000818]/50">
+                <div className="p-4 flex flex-col flex-1 bg-gradient-to-b from-transparent to-[#000818]/50 z-10">
                   <h3 className="text-sm font-bold text-white truncate" title={student.fullName}>
                     {student.fullName}
                   </h3>
@@ -162,7 +245,6 @@ export default function AdminDashboard() {
                     </span>
                   </div>
 
-                  {/* Progress & Infraction Details */}
                   {student.status === "ACTIVE" && (
                     <div className="mt-4 pt-3 border-t border-white/5 flex flex-col gap-2">
                       <div className="flex justify-between items-center text-[10px] font-bold uppercase tracking-widest text-gray-400">
@@ -170,8 +252,8 @@ export default function AdminDashboard() {
                         <span className="text-white">{student.progress} Qs</span>
                       </div>
                       {isCheating && (
-                        <div className="text-[10px] text-red-400 font-medium">
-                          Last Violation: {student.recentLogs[student.recentLogs.length - 1]?.eventType.replace("_", " ")}
+                        <div className="text-[10px] text-red-400 font-medium truncate">
+                          Alert: {student.recentLogs[student.recentLogs.length - 1]?.eventType.replace("_", " ")}
                         </div>
                       )}
                     </div>
@@ -185,18 +267,9 @@ export default function AdminDashboard() {
                     </div>
                   )}
                 </div>
-
               </div>
             );
           })}
-
-          {/* Empty State if no students are seeded */}
-          {students.length === 0 && !loading && (
-            <div className="col-span-full h-64 flex flex-col items-center justify-center text-gray-500 border border-dashed border-white/10 rounded-3xl">
-              <p className="text-sm font-bold uppercase tracking-widest">No applicants registered yet</p>
-            </div>
-          )}
-
         </div>
       </main>
     </div>

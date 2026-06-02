@@ -3,36 +3,17 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useRouter } from "next/navigation";
-
-// Import TensorFlow and Face Detection
 import '@tensorflow/tfjs-backend-webgl';
 import * as faceDetection from '@tensorflow-models/face-detection';
 
-interface Question {
-  id: string;
-  subject: string;
-  questionText: string;
-  options: string[];
-}
-
-interface StudentProfile {
-  id: string;
-  fullName: string;
-  appliedClass: "IDAADIY" | "IBTIDAAIY";
-}
-
-interface AlertModal {
-  isOpen: boolean;
-  title: string;
-  message: string;
-  type: "warning" | "confirm";
-  onConfirm?: () => void;
-}
+// ... (Interfaces remain the same)
+interface Question { id: string; subject: string; questionText: string; options: string[]; }
+interface StudentProfile { id: string; fullName: string; appliedClass: "IDAADIY" | "IBTIDAAIY"; }
+interface AlertModal { isOpen: boolean; title: string; message: string; type: "warning" | "confirm"; onConfirm?: () => void; }
 
 export default function ExamPage() {
   const router = useRouter();
 
-  // Core App States
   const [student, setStudent] = useState<StudentProfile | null>(null);
   const [subjects, setSubjects] = useState<string[]>([]);
   const [questions, setQuestions] = useState<Question[]>([]);
@@ -41,7 +22,6 @@ export default function ExamPage() {
   const [currentSubjectIndex, setCurrentSubjectIndex] = useState(0);
   const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
 
-  // UI, Security & Media States
   const [loading, setLoading] = useState(true);
   const [isSecureEnvReady, setIsSecureEnvReady] = useState(false);
   const [mediaError, setMediaError] = useState("");
@@ -49,47 +29,36 @@ export default function ExamPage() {
   const [infractions, setInfractions] = useState(0);
   const [modal, setModal] = useState<AlertModal>({ isOpen: false, title: "", message: "", type: "warning" });
   
-  // AI Tracking States
   const [aiStatus, setAiStatus] = useState<"LOADING" | "ACTIVE" | "ERROR">("LOADING");
   
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const detectorRef = useRef<faceDetection.FaceDetector | null>(null);
   const trackingIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const peerInstance = useRef<any>(null); // Holds the WebRTC Peer connection
 
-  // --- 1. INITIALIZATION ---
   useEffect(() => {
     async function initExam() {
       try {
         const res = await fetch("/api/exam/init");
-        if (!res.ok) {
-          router.push("/");
-          return;
-        }
+        if (!res.ok) { router.push("/"); return; }
         const data = await res.json();
         
         setStudent(data.student);
         setQuestions(data.questions);
         setAnswers(data.savedAnswers || {});
-        
-        const distinctSubjects = Array.from(new Set(data.questions.map((q: Question) => q.subject))) as string[];
-        setSubjects(distinctSubjects);
+        setSubjects(Array.from(new Set(data.questions.map((q: Question) => q.subject))) as string[]);
         if (data.timeLeft) setTimeLeft(data.timeLeft);
-
         setLoading(false);
-      } catch (err) {
-        router.push("/");
-      }
+      } catch (err) { router.push("/"); }
     }
     initExam();
   }, [router]);
 
-  // --- 2. PROGRESS & AUTO-ADVANCE ---
   const saveAnswerToDatabase = async (questionId: string, option: string) => {
     try {
       await fetch("/api/exam/save-answer", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
+        method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ questionId, selectedOption: option }),
       });
     } catch (err) {}
@@ -111,13 +80,11 @@ export default function ExamPage() {
     }, 500);
   };
 
-  // --- 3. ALERTS & SECURITY LOGGING ---
   const logInfraction = useCallback(async (type: string) => {
     setInfractions((prev) => prev + 1);
     try {
       await fetch("/api/exam/log-infraction", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
+        method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ eventType: type }),
       });
     } catch (err) {}
@@ -127,9 +94,7 @@ export default function ExamPage() {
     setModal({ isOpen: true, title, message, type, onConfirm });
   }, []);
   
-  const closeModal = useCallback(() => {
-    setModal(prev => ({ ...prev, isOpen: false }));
-  }, []);
+  const closeModal = useCallback(() => setModal(prev => ({ ...prev, isOpen: false })), []);
 
   useEffect(() => {
     if (loading || !isSecureEnvReady) return;
@@ -159,54 +124,42 @@ export default function ExamPage() {
     };
   }, [loading, isSecureEnvReady, logInfraction, showAlert]);
 
-  // --- 4. SUBMISSION LOGIC ---
   const executeSubmission = useCallback(async () => {
     setLoading(true);
     closeModal();
     if (streamRef.current) streamRef.current.getTracks().forEach(track => track.stop());
     if (trackingIntervalRef.current) clearInterval(trackingIntervalRef.current);
+    if (peerInstance.current) peerInstance.current.destroy();
     
     try {
       const res = await fetch("/api/exam/submit", { method: "POST" });
       if (res.ok) router.push("/");
     } catch (err) {
-      showAlert("Network Error", "Failed to submit. Please check connection.", "warning");
+      showAlert("Network Error", "Failed to submit.", "warning");
       setLoading(false);
     }
   }, [closeModal, router, showAlert]);
 
-  // --- 5. TIMER ---
   useEffect(() => {
     if (loading || !isSecureEnvReady || timeLeft <= 0) return;
     const timer = setInterval(() => {
       setTimeLeft((prev) => {
-        if (prev <= 1) {
-          clearInterval(timer);
-          executeSubmission();
-          return 0;
-        }
+        if (prev <= 1) { clearInterval(timer); executeSubmission(); return 0; }
         return prev - 1;
       });
     }, 1000);
     return () => clearInterval(timer);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loading, isSecureEnvReady, timeLeft]); // executeSubmission is deliberately excluded to prevent timer resets
+  }, [loading, isSecureEnvReady, timeLeft, executeSubmission]);
 
-  // --- 6. THE AI PROCTORING ENGINE ---
   const loadAIModel = async () => {
     try {
       const model = faceDetection.SupportedModels.MediaPipeFaceDetector;
-      // FIX: Use the correct Tfjs config interface for the 'tfjs' runtime
       const detectorConfig: faceDetection.MediaPipeFaceDetectorTfjsModelConfig = {
-        runtime: 'tfjs',
-        maxFaces: 2, 
+        runtime: 'tfjs', maxFaces: 2, 
       };
       detectorRef.current = await faceDetection.createDetector(model, detectorConfig);
       setAiStatus("ACTIVE");
-    } catch (error) {
-      console.error("AI Model failed to load:", error);
-      setAiStatus("ERROR");
-    }
+    } catch (error) { setAiStatus("ERROR"); }
   };
 
   const startAITracking = () => {
@@ -223,12 +176,32 @@ export default function ExamPage() {
           } else if (faces.length > 1) {
             logInfraction("MULTIPLE_FACES");
             showAlert("MULTIPLE FACES DETECTED", "Another person is in the frame. This is a severe violation.", "warning");
+          } else {
+            // ADVANCED GEOMETRY: Check Pitch/Yaw to see if they are looking away
+            const face = faces[0];
+            if (face.keypoints) {
+              const leftEye = face.keypoints.find(k => k.name === 'leftEye');
+              const rightEye = face.keypoints.find(k => k.name === 'rightEye');
+              const nose = face.keypoints.find(k => k.name === 'noseTip');
+              
+              if (leftEye && rightEye && nose) {
+                const leftNoseDist = Math.abs(leftEye.x - nose.x);
+                const rightNoseDist = Math.abs(rightEye.x - nose.x);
+                
+                // If nose is significantly closer to one eye, the head is turned.
+                if (rightNoseDist > 0 && leftNoseDist > 0) {
+                  const ratio = leftNoseDist / rightNoseDist;
+                  if (ratio > 3.0 || ratio < 0.33) {
+                    logInfraction("LOOKED_AWAY");
+                    showAlert("LOOKING AWAY DETECTED", "The AI detected your head is turned away from the screen.", "warning");
+                  }
+                }
+              }
+            }
           }
-        } catch (error) {
-          // Ignore transient AI evaluation errors
-        }
+        } catch (error) {}
       }
-    }, 3000); // Analyze every 3 seconds
+    }, 2500); // Check every 2.5 seconds
   };
 
   const initializeSecureEnvironment = async () => {
@@ -241,28 +214,47 @@ export default function ExamPage() {
     }
 
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" }, audio: true });
+      // Lower resolution preserves bandwidth for WebRTC transmission
+      const stream = await navigator.mediaDevices.getUserMedia({ 
+        video: { width: 320, height: 240, facingMode: "user" }, 
+        audio: true 
+      });
       streamRef.current = stream;
+      
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
         videoRef.current.play();
       }
       setIsSecureEnvReady(true);
       
-      // Load AI Model and Start Tracking
+      // 1. Start AI Tracking locally
       await loadAIModel();
       startAITracking();
+
+      // 2. Initialize WebRTC PeerJS to transmit to Admin
+      if (student?.id) {
+        // Dynamic import to prevent Next.js SSR crashes with PeerJS
+        const { Peer } = await import('peerjs');
+        const peerId = `mutoon-${student.id}`; // Create a predictable ID the admin can call
+        const peer = new Peer(peerId);
+        peerInstance.current = peer;
+
+        // When the admin dashboard "calls", answer automatically and send the camera stream
+        peer.on('call', (call) => {
+          call.answer(stream);
+        });
+      }
 
     } catch (err) {
       setMediaError("Camera and Microphone access are mandatory.");
     }
   };
 
-  // Cleanup on unmount
   useEffect(() => {
     return () => {
       if (trackingIntervalRef.current) clearInterval(trackingIntervalRef.current);
       if (streamRef.current) streamRef.current.getTracks().forEach(track => track.stop());
+      if (peerInstance.current) peerInstance.current.destroy();
     };
   }, []);
 
@@ -273,11 +265,7 @@ export default function ExamPage() {
   };
 
   if (loading) {
-    return (
-      <div className="min-h-screen bg-[#001232] flex items-center justify-center">
-        <div className="w-10 h-10 border-4 border-[#ffb902]/20 border-t-[#ffb902] rounded-full animate-spin"></div>
-      </div>
-    );
+    return <div className="min-h-screen bg-[#001232] flex items-center justify-center"><div className="w-10 h-10 border-4 border-[#ffb902]/20 border-t-[#ffb902] rounded-full animate-spin"></div></div>;
   }
 
   if (!isSecureEnvReady) {
@@ -290,20 +278,9 @@ export default function ExamPage() {
             </svg>
           </div>
           <h2 className="text-2xl font-bold text-white mb-4">Proctoring Setup</h2>
-          <p className="text-gray-400 text-sm mb-6 leading-relaxed">
-            Live video, audio monitoring, and full-screen lockdown are required. Your feed is securely transmitted and AI-monitored.
-          </p>
-          {mediaError && (
-            <div className="mb-6 p-4 bg-red-500/10 border border-red-500/20 rounded-xl">
-              <p className="text-sm font-medium text-red-400">{mediaError}</p>
-            </div>
-          )}
-          <button
-            onClick={initializeSecureEnvironment}
-            className="w-full py-4 bg-[#ffb902] text-[#001232] font-bold text-lg rounded-xl shadow-[0_0_20px_rgba(255,185,2,0.2)] active:scale-95 transition-all"
-          >
-            Allow Access & Begin
-          </button>
+          <p className="text-gray-400 text-sm mb-6 leading-relaxed">Live video, audio monitoring, and full-screen lockdown are required. Your feed is securely transmitted and AI-monitored.</p>
+          {mediaError && <div className="mb-6 p-4 bg-red-500/10 border border-red-500/20 rounded-xl"><p className="text-sm font-medium text-red-400">{mediaError}</p></div>}
+          <button onClick={initializeSecureEnvironment} className="w-full py-4 bg-[#ffb902] text-[#001232] font-bold text-lg rounded-xl shadow-[0_0_20px_rgba(255,185,2,0.2)] active:scale-95 transition-all">Allow Access & Begin</button>
         </div>
       </div>
     );
@@ -318,22 +295,11 @@ export default function ExamPage() {
       {modal.isOpen && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
           <div className="bg-[#001232] border border-white/10 w-full max-w-sm rounded-3xl p-6 shadow-2xl animate-in fade-in zoom-in-95 duration-200">
-            <h3 className={`text-xl font-bold mb-3 ${modal.type === 'warning' ? 'text-red-500' : 'text-white'}`}>
-              {modal.title}
-            </h3>
+            <h3 className={`text-xl font-bold mb-3 ${modal.type === 'warning' ? 'text-red-500' : 'text-white'}`}>{modal.title}</h3>
             <p className="text-gray-300 text-sm leading-relaxed mb-8">{modal.message}</p>
             <div className="flex gap-3">
-              {modal.type === 'confirm' && (
-                <button onClick={closeModal} className="flex-1 py-3 rounded-xl bg-white/5 hover:bg-white/10 text-white font-medium transition-colors">
-                  Cancel
-                </button>
-              )}
-              <button 
-                onClick={() => { modal.onConfirm ? modal.onConfirm() : closeModal(); }}
-                className={`flex-1 py-3 rounded-xl font-bold transition-all ${
-                  modal.type === 'warning' ? 'bg-red-500 text-white hover:bg-red-600' : 'bg-[#ffb902] text-[#001232] hover:bg-[#ffc833]'
-                }`}
-              >
+              {modal.type === 'confirm' && <button onClick={closeModal} className="flex-1 py-3 rounded-xl bg-white/5 hover:bg-white/10 text-white font-medium transition-colors">Cancel</button>}
+              <button onClick={() => { modal.onConfirm ? modal.onConfirm() : closeModal(); }} className={`flex-1 py-3 rounded-xl font-bold transition-all ${modal.type === 'warning' ? 'bg-red-500 text-white hover:bg-red-600' : 'bg-[#ffb902] text-[#001232] hover:bg-[#ffc833]'}`}>
                 {modal.type === 'confirm' ? 'Confirm Submit' : 'I Understand'}
               </button>
             </div>
@@ -344,10 +310,7 @@ export default function ExamPage() {
       {/* FLOATING AI PROCTOR WIDGET */}
       <div className="fixed bottom-4 right-4 md:bottom-8 md:right-8 w-32 h-40 md:w-48 md:h-56 bg-[#001232] border-2 border-[#ffb902]/50 rounded-2xl overflow-hidden shadow-2xl z-50">
         <div className="absolute top-0 w-full bg-black/60 px-2 py-1 flex justify-between items-center z-10 backdrop-blur-md">
-          <div className="flex items-center gap-1.5">
-            <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse"></span>
-            <span className="text-[9px] text-white font-bold tracking-widest uppercase">REC</span>
-          </div>
+          <div className="flex items-center gap-1.5"><span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse"></span><span className="text-[9px] text-white font-bold tracking-widest uppercase">REC</span></div>
           <span className={`text-[9px] font-mono ${aiStatus === "ACTIVE" ? "text-[#ffb902]" : aiStatus === "LOADING" ? "text-blue-400" : "text-red-500"}`}>
             {aiStatus === "ACTIVE" ? "AI ACTIVE" : aiStatus === "LOADING" ? "LOADING..." : "AI ERROR"}
           </span>
@@ -355,7 +318,6 @@ export default function ExamPage() {
         <div className="absolute top-0 left-0 w-full h-1 bg-[#ffb902]/50 shadow-[0_0_10px_#ffb902] z-10 animate-[scan_3s_ease-in-out_infinite]"></div>
         <video ref={videoRef} autoPlay playsInline muted className="w-full h-full object-cover filter contrast-125 brightness-90" />
       </div>
-
       <style jsx>{` @keyframes scan { 0% { top: 0; } 50% { top: 100%; } 100% { top: 0; } } `}</style>
 
       {/* HEADER */}
@@ -367,13 +329,9 @@ export default function ExamPage() {
         <div className="flex items-center justify-between w-full md:w-auto gap-4 md:gap-6">
           <div className="bg-[#000818] border border-white/10 px-4 py-2 rounded-xl flex items-center gap-3">
             <span className="text-[10px] md:text-xs uppercase font-bold text-gray-500">Time</span>
-            <span className={`font-mono text-lg md:text-xl font-black ${timeLeft < 300 ? "text-red-500 animate-pulse" : "text-[#ffb902]"}`}>
-              {formatTime(timeLeft)}
-            </span>
+            <span className={`font-mono text-lg md:text-xl font-black ${timeLeft < 300 ? "text-red-500 animate-pulse" : "text-[#ffb902]"}`}>{formatTime(timeLeft)}</span>
           </div>
-          <button onClick={() => showAlert("Submit Examination?", "Are you sure you want to submit your answers? This action is irreversible.", "confirm", executeSubmission)} className="h-10 md:h-12 px-6 bg-[#ffb902] text-[#001232] font-bold text-xs md:text-sm uppercase tracking-wider rounded-xl hover:bg-[#ffc833]">
-            Submit
-          </button>
+          <button onClick={() => showAlert("Submit Examination?", "Are you sure you want to submit your answers?", "confirm", executeSubmission)} className="h-10 md:h-12 px-6 bg-[#ffb902] text-[#001232] font-bold text-xs md:text-sm uppercase tracking-wider rounded-xl hover:bg-[#ffc833]">Submit</button>
         </div>
       </header>
 
@@ -394,9 +352,7 @@ export default function ExamPage() {
         <div className="w-full max-w-3xl">
           <div className="flex items-center justify-between mb-6">
             <h2 className="text-xl md:text-2xl font-black text-white">{subjects[currentSubjectIndex]}</h2>
-            <span className="text-xs font-bold text-gray-400 bg-white/5 px-3 py-1.5 rounded-lg border border-white/5">
-              Question {currentQuestionIndex + 1} of {activeQuestions.length}
-            </span>
+            <span className="text-xs font-bold text-gray-400 bg-white/5 px-3 py-1.5 rounded-lg border border-white/5">Question {currentQuestionIndex + 1} of {activeQuestions.length}</span>
           </div>
 
           {activeQuestion && (

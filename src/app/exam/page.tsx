@@ -4,10 +4,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useRouter } from "next/navigation";
 
-// FULL TensorFlow bundle (Fixes WebGL silent failures)
-import * as tf from '@tensorflow/tfjs';
-import * as faceDetection from '@tensorflow-models/face-detection';
-
 interface Question { id: string; subject: string; questionText: string; options: string[]; }
 interface StudentProfile { id: string; fullName: string; appliedClass: "IDAADIY" | "IBTIDAAIY"; }
 interface AlertModal { isOpen: boolean; title: string; message: string; type: "warning" | "confirm"; onConfirm?: () => void; }
@@ -32,7 +28,6 @@ export default function ExamPage() {
   const [infractions, setInfractions] = useState(0);
   const [refreshCount, setRefreshCount] = useState(0);
   
-  // Custom setter to keep State and Ref in sync for the setInterval closure
   const [isCamSuspendedState, setIsCamSuspendedState] = useState(false);
   const isCamSuspendedRef = useRef(false);
   const setIsCamSuspended = useCallback((val: boolean) => {
@@ -41,16 +36,13 @@ export default function ExamPage() {
   }, []);
 
   const [modal, setModal] = useState<AlertModal>({ isOpen: false, title: "", message: "", type: "warning" });
-  const [aiStatus, setAiStatus] = useState<"LOADING" | "ACTIVE" | "ERROR">("LOADING");
   
   const [examResult, setExamResult] = useState<{ score: number; placement: string } | null>(null);
   
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
-  const detectorRef = useRef<faceDetection.FaceDetector | null>(null);
-  const trackingIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const peerInstance = useRef<any>(null);
-  const adminVideoRef = useRef<HTMLAudioElement>(null); // CHANGED TO AUDIO TAG
+  const adminVideoRef = useRef<HTMLAudioElement>(null); 
 
   useEffect(() => {
     async function initExam() {
@@ -169,7 +161,6 @@ export default function ExamPage() {
 
   const stopAllTracks = useCallback(() => {
     if (streamRef.current) streamRef.current.getTracks().forEach(track => track.stop());
-    if (trackingIntervalRef.current) clearInterval(trackingIntervalRef.current);
     if (peerInstance.current) peerInstance.current.destroy();
   }, []);
 
@@ -224,76 +215,6 @@ export default function ExamPage() {
     return () => clearInterval(timer);
   }, [stage, timeLeft, executeSubmission]);
 
-  // THE AI ENGINE - BULLETPROOF IMPLEMENTATION
-  const loadAIModel = async () => {
-    try {
-      await tf.setBackend('webgl');
-      await tf.ready();
-      
-      const model = faceDetection.SupportedModels.MediaPipeFaceDetector;
-      
-      // FIXED: Using TFJS runtime instead of CDN MediaPipe
-      const detectorConfig: any = {
-        runtime: 'tfjs',
-        maxFaces: 2, 
-      };
-      
-      detectorRef.current = await faceDetection.createDetector(model, detectorConfig);
-      console.log("Detector loaded successfully:", detectorRef.current);
-      setAiStatus("ACTIVE");
-      return true;
-    } catch (error) { 
-      console.error("Model load error:", error);
-      setAiStatus("ERROR"); 
-      return false;
-    }
-  };
-
-  const startAITracking = () => {
-    console.log("Tracking started. Interval bound.");
-    if (trackingIntervalRef.current) clearInterval(trackingIntervalRef.current);
-    
-    trackingIntervalRef.current = setInterval(async () => {
-      // Checking the live ref instead of the stale state closure
-      if (videoRef.current && videoRef.current.readyState >= 2 && detectorRef.current && !isCamSuspendedRef.current) {
-        try {
-          const faces = await detectorRef.current.estimateFaces(videoRef.current as any);
-          
-          if (faces.length === 0) {
-            logInfraction("FACE_NOT_DETECTED");
-            showAlert("FACE NOT DETECTED", "Please look directly into your camera frame.", "warning");
-          } else if (faces.length > 1) {
-            logInfraction("MULTIPLE_FACES");
-            showAlert("MULTIPLE FACES DETECTED", "Multiple people detected inside the frame.", "warning");
-          } else {
-            const face = faces[0];
-            
-            if (face.keypoints) {
-              const leftEye = face.keypoints.find(k => k.name === 'leftEye') || face.keypoints[1];
-              const rightEye = face.keypoints.find(k => k.name === 'rightEye') || face.keypoints[0];
-              const nose = face.keypoints.find(k => k.name === 'noseTip') || face.keypoints[2];
-              
-              if (leftEye && rightEye && nose) {
-                const leftDist = Math.abs(nose.x - leftEye.x);
-                const rightDist = Math.abs(nose.x - rightEye.x);
-                
-                if (rightDist > 0 && leftDist > 0) {
-                  const ratio = leftDist / rightDist;
-                  if (ratio > 2.5 || ratio < 0.4) {
-                    logInfraction("LOOKED_AWAY");
-                    showAlert("LOOKING AWAY DETECTED", "Ensure your head is focused toward the viewport.", "warning");
-                  }
-                }
-              }
-            }
-          }
-        } catch (error) {
-          console.error("Face detection error:", error);
-        }
-      }
-    }, 2000); 
-  };
-
   const initializeSecureEnvironment = async () => {
     setMediaError("");
     const element = document.documentElement;
@@ -310,15 +231,6 @@ export default function ExamPage() {
       
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
-        
-        // FIXED RACE CONDITION: Only start AI if model is already loaded
-        videoRef.current.onloadeddata = () => {
-            console.log("Video data loaded. Ready for AI evaluation.");
-            if (detectorRef.current) {
-               startAITracking();
-            }
-        };
-        
         videoRef.current.play();
       }
 
@@ -339,13 +251,8 @@ export default function ExamPage() {
 
       localStorage.setItem("mutoon_exam_active", "true");
       setStage("EXAM");
-      
-      // Initialize the AI Model concurrently
-      const modelLoaded = await loadAIModel();
-      if (modelLoaded && videoRef.current && videoRef.current.readyState >= 2) {
-          startAITracking(); 
-      }
 
+      // Connect to the Admin Room via PeerJS
       if (student?.id) {
         const { Peer } = await import('peerjs');
         const peer = new Peer(`mutoon-${student.id}`);
@@ -353,11 +260,11 @@ export default function ExamPage() {
         peer.on('open', () => { peerInstance.current = peer; });
         peer.on('call', (call) => { 
           if (streamRef.current) {
+            // Answer the call with the student's camera and mic stream
             call.answer(streamRef.current);
             call.on('stream', (remoteAdminStream) => {
               if (adminVideoRef.current) {
                 adminVideoRef.current.srcObject = remoteAdminStream;
-                // Leave unmuted so the student can hear the admin broadcast
                 adminVideoRef.current.play().catch(() => {});
               }
             });
@@ -394,7 +301,7 @@ export default function ExamPage() {
           
           <div className="space-y-4 text-sm text-gray-300 border-y border-white/5 py-6 my-6 leading-relaxed">
             <div className="flex gap-3"><span className="text-[#ffb902] font-bold">1.</span><p>Do not switch tabs, minimize your browser, or open any inspect elements. These actions are instantly logged as security violations.</p></div>
-            <div className="flex gap-3"><span className="text-[#ffb902] font-bold">2.</span><p>Ensure your face remains centered in the camera preview frame at all times. The AI tracker monitors your eye presence continuously.</p></div>
+            <div className="flex gap-3"><span className="text-[#ffb902] font-bold">2.</span><p>Ensure your face remains centered in the camera preview frame at all times for proctoring visibility.</p></div>
             <div className="flex gap-3"><span className="text-[#ffb902] font-bold">3.</span><p>Do not refresh the examination environment. If you reload your window <strong>3 times</strong>, your test automatically forces submission.</p></div>
             <div className="flex gap-3"><span className="text-[#ffb902] font-bold">4.</span><p>The system records and transmits live audio. Ensure you are taking this assessment in a quiet room with clear lighting profiles.</p></div>
           </div>
@@ -467,7 +374,6 @@ export default function ExamPage() {
   return (
     <div className="min-h-screen bg-[#000818] text-slate-100 flex flex-col font-sans relative overflow-x-hidden">
       
-      {/* FIXED AUDIO RENDER: Changed to audio tag, removed display:none trigger (hidden) */}
       <audio ref={adminVideoRef} autoPlay playsInline className="w-0 h-0 absolute opacity-0 pointer-events-none" />
 
       {isCamSuspendedState && (
@@ -500,17 +406,14 @@ export default function ExamPage() {
         </div>
       )}
 
+      {/* Simplified Local Video Overlay */}
       <div className="fixed bottom-4 right-4 md:bottom-8 md:right-8 w-32 h-40 md:w-48 md:h-56 bg-[#001232] border-2 border-[#ffb902]/50 rounded-2xl overflow-hidden shadow-2xl z-50">
         <div className="absolute top-0 w-full bg-black/60 px-2 py-1 flex justify-between items-center z-10 backdrop-blur-md">
           <div className="flex items-center gap-1.5"><span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse"></span><span className="text-[9px] text-white font-bold tracking-widest uppercase">REC</span></div>
-          <span className={`text-[9px] font-mono ${aiStatus === "ACTIVE" ? "text-[#ffb902]" : aiStatus === "LOADING" ? "text-blue-400" : "text-red-500"}`}>
-            {aiStatus === "ACTIVE" ? "AI ACTIVE" : aiStatus === "LOADING" ? "LOADING..." : "AI ERROR"}
-          </span>
+          <span className="text-[9px] font-mono text-emerald-400">PROCTORING</span>
         </div>
-        <div className="absolute top-0 left-0 w-full h-1 bg-[#ffb902]/50 shadow-[0_0_10px_#ffb902] z-10 animate-[scan_3s_ease-in-out_infinite]"></div>
         <video width="320" height="240" ref={videoRef} autoPlay playsInline muted className="w-full h-full object-cover filter contrast-125 brightness-90" />
       </div>
-      <style jsx>{` @keyframes scan { 0% { top: 0; } 50% { top: 100%; } 100% { top: 0; } } `}</style>
 
       <header className="bg-[#001232] border-b border-white/5 h-auto py-4 md:py-0 md:h-20 flex flex-col md:flex-row items-center justify-between px-4 md:px-8 shrink-0 gap-4 md:gap-0 z-40">
         <div className="text-center md:text-left w-full md:w-auto">

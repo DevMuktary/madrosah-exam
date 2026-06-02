@@ -17,7 +17,6 @@ type ExamStage = "RULES" | "SETUP" | "EXAM" | "RESULT";
 export default function ExamPage() {
   const router = useRouter();
 
-  // Core Exam States
   const [stage, setStage] = useState<ExamStage>("RULES");
   const [student, setStudent] = useState<StudentProfile | null>(null);
   const [subjects, setSubjects] = useState<string[]>([]);
@@ -27,7 +26,6 @@ export default function ExamPage() {
   const [currentSubjectIndex, setCurrentSubjectIndex] = useState(0);
   const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
 
-  // Monitoring & Security States
   const [loading, setLoading] = useState(true);
   const [mediaError, setMediaError] = useState("");
   const [timeLeft, setTimeLeft] = useState<number>(3600);
@@ -37,10 +35,8 @@ export default function ExamPage() {
   const [modal, setModal] = useState<AlertModal>({ isOpen: false, title: "", message: "", type: "warning" });
   const [aiStatus, setAiStatus] = useState<"LOADING" | "ACTIVE" | "ERROR">("LOADING");
   
-  // Results State
   const [examResult, setExamResult] = useState<{ score: number; placement: string } | null>(null);
   
-  // Refs
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const detectorRef = useRef<faceDetection.FaceDetector | null>(null);
@@ -48,7 +44,6 @@ export default function ExamPage() {
   const peerInstance = useRef<any>(null);
   const adminVideoRef = useRef<HTMLVideoElement>(null);
 
-  // 1. Initialize Exam Data & Monitor Page Refreshes
   useEffect(() => {
     async function initExam() {
       try {
@@ -62,7 +57,6 @@ export default function ExamPage() {
         setSubjects(Array.from(new Set(data.questions.map((q: Question) => q.subject))) as string[]);
         if (data.timeLeft) setTimeLeft(data.timeLeft);
 
-        // Handle Refresh Tracking Safely via LocalStorage
         const activeSession = localStorage.getItem("mutoon_exam_active");
         let refreshes = parseInt(localStorage.getItem("mutoon_exam_refreshes") || "0", 10);
 
@@ -81,7 +75,7 @@ export default function ExamPage() {
               `You refreshed the page. Warning ${refreshes}/3. Reaching 3 refreshes submits your exam automatically.`, 
               "warning"
             );
-            setStage("SETUP"); // Force re-verify camera stream
+            setStage("SETUP");
           }
         }
         
@@ -105,7 +99,7 @@ export default function ExamPage() {
   const activeQuestions = questions.filter((q) => q.subject === subjects[currentSubjectIndex]);
 
   const handleOptionSelect = (questionId: string, option: string) => {
-    if (isCamSuspended) return; // Freeze inputs if camera is blocked
+    if (isCamSuspended) return; 
     setAnswers((prev) => ({ ...prev, [questionId]: option }));
     saveAnswerToDatabase(questionId, option);
 
@@ -126,7 +120,9 @@ export default function ExamPage() {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ eventType: type }),
       });
-    } catch (err) {}
+    } catch (err) {
+      console.error("Failed to log infraction:", err);
+    }
   }, []);
 
   const showAlert = useCallback((title: string, message: string, type: "warning" | "confirm" = "warning", onConfirm?: () => void) => {
@@ -135,7 +131,6 @@ export default function ExamPage() {
   
   const closeModal = useCallback(() => setModal(prev => ({ ...prev, isOpen: false })), []);
 
-  // 2. Window Event Focus/Lockout Observers
   useEffect(() => {
     if (stage !== "EXAM" || isCamSuspended) return;
 
@@ -164,14 +159,12 @@ export default function ExamPage() {
     };
   }, [stage, isCamSuspended, logInfraction, showAlert]);
 
-  // Clean-up Streams
   const stopAllTracks = useCallback(() => {
     if (streamRef.current) streamRef.current.getTracks().forEach(track => track.stop());
     if (trackingIntervalRef.current) clearInterval(trackingIntervalRef.current);
     if (peerInstance.current) peerInstance.current.destroy();
   }, []);
 
-  // 3. Normal Submission Handling
   const executeSubmission = useCallback(async () => {
     setLoading(true);
     closeModal();
@@ -183,7 +176,7 @@ export default function ExamPage() {
       const res = await fetch("/api/exam/submit", { method: "POST" });
       if (res.ok) {
         const data = await res.json();
-        setExamResult({ score: data.score, placement: data.placementClass });
+        setExamResult({ score: data.score, placement: data.placementClass || data.placement });
         setStage("RESULT");
       } else {
         router.push("/");
@@ -195,7 +188,6 @@ export default function ExamPage() {
     }
   }, [closeModal, stopAllTracks, router]);
 
-  // 4. Force Submission for Violation handling
   const handleAutoSubmitDueToRefresh = async () => {
     stopAllTracks();
     localStorage.removeItem("mutoon_exam_active");
@@ -204,7 +196,7 @@ export default function ExamPage() {
       const res = await fetch("/api/exam/submit", { method: "POST" });
       if (res.ok) {
         const data = await res.json();
-        setExamResult({ score: data.score, placement: data.placementClass });
+        setExamResult({ score: data.score, placement: data.placementClass || data.placement });
         setStage("RESULT");
         showAlert("EXAM TERMINATED", "Your exam was automatically submitted because you exceeded the maximum allowed page refreshes.", "warning");
       }
@@ -213,7 +205,6 @@ export default function ExamPage() {
     }
   };
 
-  // 5. Global Exam Countdown
   useEffect(() => {
     if (stage !== "EXAM" || timeLeft <= 0) return;
     const timer = setInterval(() => {
@@ -225,18 +216,23 @@ export default function ExamPage() {
     return () => clearInterval(timer);
   }, [stage, timeLeft, executeSubmission]);
 
-  // 6. AI Vision Core Engine
+  // THE AI ENGINE - FIXED STALE CLOSURE & BACKEND
   const loadAIModel = async () => {
     try {
+      await tf.setBackend('webgl');
       await tf.ready();
+      
       const model = faceDetection.SupportedModels.MediaPipeFaceDetector;
       const detectorConfig: faceDetection.MediaPipeFaceDetectorTfjsModelConfig = {
         runtime: 'tfjs', maxFaces: 2, 
       };
       detectorRef.current = await faceDetection.createDetector(model, detectorConfig);
       setAiStatus("ACTIVE");
+      return true;
     } catch (error) { 
+      console.error("Model load error:", error);
       setAiStatus("ERROR"); 
+      return false;
     }
   };
 
@@ -244,7 +240,8 @@ export default function ExamPage() {
     if (trackingIntervalRef.current) clearInterval(trackingIntervalRef.current);
     
     trackingIntervalRef.current = setInterval(async () => {
-      if (videoRef.current && videoRef.current.readyState >= 2 && detectorRef.current && aiStatus === "ACTIVE" && !isCamSuspended) {
+      // Stale closure fixed: No longer checking aiStatus === "ACTIVE" here
+      if (videoRef.current && videoRef.current.readyState >= 2 && detectorRef.current && !isCamSuspended) {
         try {
           const faces = await detectorRef.current.estimateFaces(videoRef.current);
           
@@ -256,10 +253,14 @@ export default function ExamPage() {
             showAlert("MULTIPLE FACES DETECTED", "Multiple people detected inside the frame.", "warning");
           } else {
             const face = faces[0];
+            
+            // Console log to debug keypoints if needed
+            // console.log("Detected Keypoints:", face.keypoints);
+            
             if (face.keypoints) {
-              const leftEye = face.keypoints.find(k => k.name === 'leftEye');
-              const rightEye = face.keypoints.find(k => k.name === 'rightEye');
-              const nose = face.keypoints.find(k => k.name === 'noseTip');
+              const leftEye = face.keypoints.find(k => k.name === 'leftEye') || face.keypoints[1];
+              const rightEye = face.keypoints.find(k => k.name === 'rightEye') || face.keypoints[0];
+              const nose = face.keypoints.find(k => k.name === 'noseTip') || face.keypoints[2];
               
               if (leftEye && rightEye && nose) {
                 const leftDist = Math.abs(nose.x - leftEye.x);
@@ -267,7 +268,7 @@ export default function ExamPage() {
                 
                 if (rightDist > 0 && leftDist > 0) {
                   const ratio = leftDist / rightDist;
-                  if (ratio > 1.8 || ratio < 0.55) {
+                  if (ratio > 2.5 || ratio < 0.4) {
                     logInfraction("LOOKED_AWAY");
                     showAlert("LOOKING AWAY DETECTED", "Ensure your head is focused toward the viewport.", "warning");
                   }
@@ -275,12 +276,13 @@ export default function ExamPage() {
               }
             }
           }
-        } catch (error) {}
+        } catch (error) {
+          console.error("Face detection error:", error);
+        }
       }
     }, 2000); 
   };
 
-  // 7. Media Setup & Active Hardware Failure Observation
   const initializeSecureEnvironment = async () => {
     setMediaError("");
     const element = document.documentElement;
@@ -300,13 +302,11 @@ export default function ExamPage() {
         videoRef.current.play();
       }
 
-      // Check for live permission changes / dynamic unplugging
       stream.getVideoTracks()[0].onended = () => {
         setIsCamSuspended(true);
         logInfraction("CAMERA_DISCONNECTED");
       };
 
-      // Periodic sanity check loop for hardware tracks
       const hardwareTrackCheck = setInterval(() => {
         if (streamRef.current) {
           const videoTrack = streamRef.current.getVideoTracks()[0];
@@ -320,10 +320,18 @@ export default function ExamPage() {
       localStorage.setItem("mutoon_exam_active", "true");
       setStage("EXAM");
       
-      await loadAIModel();
-      setTimeout(() => startAITracking(), 1000); 
+      const modelLoaded = await loadAIModel();
+      if (modelLoaded && videoRef.current) {
+         // Start tracking exactly when video data is ready
+         videoRef.current.addEventListener("loadeddata", () => {
+            startAITracking();
+         });
+         // Fallback if already loaded
+         if (videoRef.current.readyState >= 2) {
+           startAITracking();
+         }
+      }
 
-      // WebRTC Link: Receiving Admin Video Containment (Fixes muted audio bug)
       if (student?.id) {
         const { Peer } = await import('peerjs');
         const peer = new Peer(`mutoon-${student.id}`);
@@ -334,8 +342,9 @@ export default function ExamPage() {
             call.answer(streamRef.current);
             call.on('stream', (remoteAdminStream) => {
               if (adminVideoRef.current) {
+                // Ensure this plays UNMUTED so the student hears the admin
                 adminVideoRef.current.srcObject = remoteAdminStream;
-                adminVideoRef.current.play().catch(() => {});
+                adminVideoRef.current.play().catch(e => console.error("Admin audio playback failed:", e));
               }
             });
           } 
@@ -360,7 +369,6 @@ export default function ExamPage() {
     return <div className="min-h-screen bg-[#001232] flex items-center justify-center"><div className="w-10 h-10 border-4 border-[#ffb902]/20 border-t-[#ffb902] rounded-full animate-spin"></div></div>;
   }
 
-  // STAGE 0: RULES SCREEN
   if (stage === "RULES") {
     return (
       <div className="min-h-screen bg-[#000818] text-slate-100 flex items-center justify-center p-4">
@@ -385,7 +393,6 @@ export default function ExamPage() {
     );
   }
 
-  // STAGE 1: HARDWARE ACCESS INITIALIZATION
   if (stage === "SETUP") {
     return (
       <div className="min-h-screen bg-[#001232] flex flex-col items-center justify-center p-6 text-center">
@@ -404,7 +411,6 @@ export default function ExamPage() {
     );
   }
 
-  // STAGE 3: TEST SUMMARY & FINAL SCORES
   if (stage === "RESULT" && examResult) {
     return (
       <div className="min-h-screen bg-[#000818] text-slate-100 flex items-center justify-center p-6">
@@ -444,14 +450,12 @@ export default function ExamPage() {
 
   const activeQuestion = activeQuestions[currentQuestionIndex];
 
-  // STAGE 2: LIVE RUNNING EXAM WINDOW
   return (
     <div className="min-h-screen bg-[#000818] text-slate-100 flex flex-col font-sans relative overflow-x-hidden">
       
-      {/* Hidden Track Unpacker Element: Fixes the Admin incoming Audio Track mute bug */}
+      {/* Hidden Unmuted Track Unpacker: Enables student to hear Admin */}
       <video ref={adminVideoRef} autoPlay playsInline className="hidden absolute opacity-0 pointer-events-none" />
 
-      {/* SUSPENDED/MUTED DEVICE HARDWARE OVERLAY BLOCK */}
       {isCamSuspended && (
         <div className="fixed inset-0 z-[200] bg-[#000818]/95 flex items-center justify-center p-6 backdrop-blur-md animate-in fade-in duration-300">
           <div className="max-w-sm w-full bg-[#001232] border border-red-500 p-8 rounded-3xl text-center shadow-2xl">
@@ -482,7 +486,6 @@ export default function ExamPage() {
         </div>
       )}
 
-      {/* FLOATING PROCTOR VIDEO BOX CONTAINER */}
       <div className="fixed bottom-4 right-4 md:bottom-8 md:right-8 w-32 h-40 md:w-48 md:h-56 bg-[#001232] border-2 border-[#ffb902]/50 rounded-2xl overflow-hidden shadow-2xl z-50">
         <div className="absolute top-0 w-full bg-black/60 px-2 py-1 flex justify-between items-center z-10 backdrop-blur-md">
           <div className="flex items-center gap-1.5"><span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse"></span><span className="text-[9px] text-white font-bold tracking-widest uppercase">REC</span></div>

@@ -101,11 +101,12 @@ export default function LoginPage() {
   const [phoneNumber, setPhoneNumber] = useState("");
   const [selectedCountry, setSelectedCountry] = useState(countryList[0]);
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
-  const [searchQuery, setSearchQuery] = useState(""); // For mobile filtering
+  const [searchQuery, setSearchQuery] = useState(""); 
   
   // Status States
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [isRedirecting, setIsRedirecting] = useState(false); // NEW STATE added here
   const [examResult, setExamResult] = useState<{ score: number; placement: string } | null>(null);
 
   const dropdownRef = useRef<HTMLDivElement>(null);
@@ -139,6 +140,8 @@ export default function LoginPage() {
     const formattedPhone = phoneNumber.replace(/^0+/, '').replace(/\s+/g, '');
     const fullPhoneNumber = `${selectedCountry.code}${formattedPhone}`;
 
+    let loginSuccess = false; // Added to track success state inside finally block
+
     try {
       const res = await fetch("/api/auth/login", {
         method: "POST",
@@ -149,6 +152,8 @@ export default function LoginPage() {
       const data = await res.json();
 
       if (res.ok) {
+        loginSuccess = true;
+        setIsRedirecting(true); // Triggers the full-card circular spinner
         router.push("/exam");
       } else if (res.status === 403) {
         setExamResult({
@@ -161,7 +166,10 @@ export default function LoginPage() {
     } catch (err) {
       setError("A network error occurred. Please try again.");
     } finally {
-      setLoading(false);
+      // Only disable loading if the login failed, so the spinner stays visible during routing
+      if (!loginSuccess) {
+        setLoading(false);
+      }
     }
   };
 
@@ -178,7 +186,6 @@ export default function LoginPage() {
         {/* Header Section */}
         <div className="text-center mb-10">
           <div className="inline-flex items-center justify-center w-16 h-16 rounded-full bg-[#ffb902]/10 border border-[#ffb902]/20 mb-6">
-            {/* Elegant Book/Crescent Icon matching the theme */}
             <svg className="w-8 h-8 text-[#ffb902]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477-4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
             </svg>
@@ -192,7 +199,15 @@ export default function LoginPage() {
         </div>
 
         {/* Dynamic State Rendering */}
-        {examResult ? (
+        {isRedirecting ? (
+          /* REDIRECTING SPINNER SCREEN */
+          <div className="flex flex-col items-center justify-center py-8 animate-in fade-in duration-500">
+            <div className="w-16 h-16 border-4 border-[#ffb902]/20 border-t-[#ffb902] rounded-full animate-spin mb-6"></div>
+            <h2 className="text-xl font-semibold text-white mb-2">Login Successful</h2>
+            <p className="text-[#ffb902] text-sm animate-pulse tracking-wide font-medium">Preparing exam environment...</p>
+          </div>
+        ) : examResult ? (
+          /* EXAM ALREADY COMPLETED SCREEN */
           <div className="bg-white/5 border border-white/10 rounded-2xl p-6 sm:p-8 text-center animate-in fade-in duration-500">
             <h2 className="text-xl font-semibold text-white mb-2">Examination Completed</h2>
             <p className="text-gray-400 mb-8 text-sm">Your secure session has concluded.</p>
@@ -217,13 +232,13 @@ export default function LoginPage() {
             </button>
           </div>
         ) : (
+          /* DEFAULT LOGIN FORM */
           <form onSubmit={handleLogin} className="space-y-6">
             <div className="space-y-2">
               <label className="block text-sm font-medium text-gray-300 ml-1">
                 Registered Phone Number
               </label>
               
-              {/* Complex Input Group - Fixed to Always Be Side-by-Side */}
               <div className="relative flex shadow-sm rounded-xl">
                 
                 {/* Custom Country Dropdown Trigger */}
@@ -244,7 +259,6 @@ export default function LoginPage() {
                   {isDropdownOpen && (
                     <div className="absolute top-[60px] left-0 w-[280px] sm:w-[300px] bg-[#001232] border border-white/10 rounded-xl shadow-2xl z-50 overflow-hidden animate-in fade-in slide-in-from-top-2">
                       
-                      {/* Search Bar for Mobile Accessibility */}
                       <div className="p-3 border-b border-white/10 bg-white/5">
                         <input 
                           type="text" 
@@ -258,14 +272,13 @@ export default function LoginPage() {
                       <ul className="max-h-[250px] overflow-y-auto scrollbar-thin scrollbar-thumb-white/10 scrollbar-track-transparent">
                         {filteredCountries.length > 0 ? filteredCountries.map((country, index) => (
                           <li key={index}>
-                            {/* Visual Divider after Priority Countries */}
                             {index === 5 && !searchQuery && <div className="h-px bg-white/10 my-1 mx-4"></div>}
                             <button
                               type="button"
                               onClick={() => {
                                 setSelectedCountry(country);
                                 setIsDropdownOpen(false);
-                                setSearchQuery(""); // Reset search
+                                setSearchQuery(""); 
                               }}
                               className="w-full flex items-center gap-3 px-4 py-3 hover:bg-white/5 text-left transition-colors"
                             >
@@ -325,7 +338,7 @@ export default function LoginPage() {
           Powered by
         </p>
         <p className="text-sm font-bold text-gray-400 mt-1">
-          Quadrox Technologies
+          Quadrox Technologies Limited
         </p>
       </div>
     </main>

@@ -56,13 +56,36 @@ export default function AdminDashboard() {
   
   const peerInstance = useRef<any>(null);
   const activeCalls = useRef<Set<string>>(new Set());
+  
   const adminAudioTrackRef = useRef<MediaStreamTrack | null>(null);
+  const adminStreamRef = useRef<MediaStream | null>(null);
 
   useEffect(() => {
     navigator.mediaDevices.getUserMedia({ audio: true }).then((stream) => {
-      const track = stream.getAudioTracks()[0];
-      track.enabled = false; 
-      adminAudioTrackRef.current = track;
+      const audioTrack = stream.getAudioTracks()[0];
+      audioTrack.enabled = false; 
+      adminAudioTrackRef.current = audioTrack;
+
+      // FIXED: Animated dummy canvas to keep video track alive and audio synced
+      const canvas = document.createElement("canvas");
+      canvas.width = 2;
+      canvas.height = 2;
+      const ctx = canvas.getContext("2d");
+      
+      setInterval(() => {
+        if (ctx) {
+          ctx.fillStyle = ctx.fillStyle === "#000000" ? "#010101" : "#000000";
+          ctx.fillRect(0, 0, 2, 2);
+        }
+      }, 100); 
+
+      const canvasStream = canvas.captureStream(10);
+      
+      adminStreamRef.current = new MediaStream([
+        canvasStream.getVideoTracks()[0],
+        audioTrack
+      ]);
+
       setIsMicReady(true);
     }).catch(err => {
       console.warn("Admin mic access denied:", err);
@@ -101,22 +124,14 @@ export default function AdminDashboard() {
   }, []);
 
   useEffect(() => {
-    // Calling Engine now strictly waits for isMicReady
     if (!isPeerReady || !isMicReady || !peerInstance.current || students.length === 0) return;
-
-    // FIXED WEBRTC SYNC: Do not use a dummy Canvas. Call using only the raw audio track.
-    let outStream: MediaStream;
-    if (adminAudioTrackRef.current) {
-        outStream = new MediaStream([adminAudioTrackRef.current]);
-    } else {
-        return; // No microphone detected, stop execution.
-    }
+    if (!adminStreamRef.current) return;
 
     students.forEach((student) => {
       if (student.status === "ACTIVE" && !activeCalls.current.has(student.id)) {
         activeCalls.current.add(student.id);
 
-        const call = peerInstance.current.call(`mutoon-${student.id}`, outStream);
+        const call = peerInstance.current.call(`mutoon-${student.id}`, adminStreamRef.current);
 
         if (call) {
           call.on("stream", (remoteStream: MediaStream) => {
@@ -151,7 +166,6 @@ export default function AdminDashboard() {
 
   return (
     <div className="min-h-screen bg-[#000818] text-slate-100 font-sans flex flex-col h-screen overflow-hidden">
-      
       <header className="bg-[#001232] border-b border-white/10 h-20 flex items-center justify-between px-6 md:px-8 shrink-0 z-40 shadow-xl">
         <div className="flex items-center gap-4">
           <div className="w-10 h-10 bg-[#ffb902]/10 rounded-xl flex items-center justify-center border border-[#ffb902]/30 shadow-[0_0_15px_rgba(255,185,2,0.2)]">
@@ -194,7 +208,6 @@ export default function AdminDashboard() {
 
       <main className="flex-1 overflow-y-auto p-4 md:p-8">
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-5 gap-4 md:gap-6 auto-rows-max max-w-[1600px] mx-auto">
-          
           {students.map((student) => {
             const isCheating = student.infractionCount > 0 && student.status === "ACTIVE";
             const isFinished = student.status === "COMPLETED";
@@ -206,9 +219,7 @@ export default function AdminDashboard() {
                   isCheating ? "border-2 border-red-500 shadow-[0_0_20px_rgba(239,68,68,0.3)]" : isFinished ? "border border-emerald-500/30 opacity-80" : "border border-white/10 hover:border-white/30"
                 }`}
               >
-                
                 <div className="relative w-full aspect-video bg-[#000818] border-b border-white/5 flex flex-col items-center justify-center overflow-hidden">
-                  
                   {student.status === "PENDING" && (
                     <span className="text-xs text-gray-600 font-bold uppercase tracking-widest z-10">Offline</span>
                   )}

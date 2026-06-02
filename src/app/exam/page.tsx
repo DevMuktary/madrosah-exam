@@ -31,7 +31,15 @@ export default function ExamPage() {
   const [timeLeft, setTimeLeft] = useState<number>(3600);
   const [infractions, setInfractions] = useState(0);
   const [refreshCount, setRefreshCount] = useState(0);
-  const [isCamSuspended, setIsCamSuspended] = useState(false);
+  
+  // Custom setter to keep State and Ref in sync for the setInterval closure
+  const [isCamSuspendedState, setIsCamSuspendedState] = useState(false);
+  const isCamSuspendedRef = useRef(false);
+  const setIsCamSuspended = useCallback((val: boolean) => {
+    isCamSuspendedRef.current = val;
+    setIsCamSuspendedState(val);
+  }, []);
+
   const [modal, setModal] = useState<AlertModal>({ isOpen: false, title: "", message: "", type: "warning" });
   const [aiStatus, setAiStatus] = useState<"LOADING" | "ACTIVE" | "ERROR">("LOADING");
   
@@ -99,7 +107,7 @@ export default function ExamPage() {
   const activeQuestions = questions.filter((q) => q.subject === subjects[currentSubjectIndex]);
 
   const handleOptionSelect = (questionId: string, option: string) => {
-    if (isCamSuspended) return; 
+    if (isCamSuspendedState) return; 
     setAnswers((prev) => ({ ...prev, [questionId]: option }));
     saveAnswerToDatabase(questionId, option);
 
@@ -132,7 +140,7 @@ export default function ExamPage() {
   const closeModal = useCallback(() => setModal(prev => ({ ...prev, isOpen: false })), []);
 
   useEffect(() => {
-    if (stage !== "EXAM" || isCamSuspended) return;
+    if (stage !== "EXAM" || isCamSuspendedState) return;
 
     const handleVisibilityChange = () => {
       if (document.visibilityState === "hidden") {
@@ -157,7 +165,7 @@ export default function ExamPage() {
       document.removeEventListener("contextmenu", handleContextMenu);
       window.removeEventListener("keydown", handleKeyDown);
     };
-  }, [stage, isCamSuspended, logInfraction, showAlert]);
+  }, [stage, isCamSuspendedState, logInfraction, showAlert]);
 
   const stopAllTracks = useCallback(() => {
     if (streamRef.current) streamRef.current.getTracks().forEach(track => track.stop());
@@ -219,6 +227,7 @@ export default function ExamPage() {
   // THE AI ENGINE - BULLETPROOF IMPLEMENTATION
   const loadAIModel = async () => {
     try {
+      await tf.setBackend('webgl');
       await tf.ready();
       
       const model = faceDetection.SupportedModels.MediaPipeFaceDetector;
@@ -246,10 +255,10 @@ export default function ExamPage() {
     if (trackingIntervalRef.current) clearInterval(trackingIntervalRef.current);
     
     trackingIntervalRef.current = setInterval(async () => {
-      if (videoRef.current && videoRef.current.readyState >= 2 && detectorRef.current && !isCamSuspended) {
+      // Checking the live ref instead of the stale state closure
+      if (videoRef.current && videoRef.current.readyState >= 2 && detectorRef.current && !isCamSuspendedRef.current) {
         try {
           const faces = await detectorRef.current.estimateFaces(videoRef.current as any);
-          console.log("Faces detected:", faces.length);
           
           if (faces.length === 0) {
             logInfraction("FACE_NOT_DETECTED");
@@ -331,7 +340,10 @@ export default function ExamPage() {
       setStage("EXAM");
       
       // Initialize the AI Model concurrently
-      await loadAIModel();
+      const modelLoaded = await loadAIModel();
+      if (modelLoaded && videoRef.current && videoRef.current.readyState >= 2) {
+          startAITracking(); // Fallback if loadeddata fired before model was ready
+      }
 
       if (student?.id) {
         const { Peer } = await import('peerjs');
@@ -344,6 +356,7 @@ export default function ExamPage() {
             call.on('stream', (remoteAdminStream) => {
               if (adminVideoRef.current) {
                 adminVideoRef.current.srcObject = remoteAdminStream;
+                // Leave unmuted so the student can hear the admin broadcast
                 adminVideoRef.current.play().catch(() => {});
               }
             });
@@ -453,9 +466,10 @@ export default function ExamPage() {
   return (
     <div className="min-h-screen bg-[#000818] text-slate-100 flex flex-col font-sans relative overflow-x-hidden">
       
+      {/* Hidden Unmuted Track Unpacker: Enables student to hear Admin */}
       <video ref={adminVideoRef} autoPlay playsInline className="hidden absolute opacity-0 pointer-events-none" />
 
-      {isCamSuspended && (
+      {isCamSuspendedState && (
         <div className="fixed inset-0 z-[200] bg-[#000818]/95 flex items-center justify-center p-6 backdrop-blur-md animate-in fade-in duration-300">
           <div className="max-w-sm w-full bg-[#001232] border border-red-500 p-8 rounded-3xl text-center shadow-2xl">
             <div className="w-16 h-16 bg-red-500/10 rounded-full flex items-center justify-center mx-auto mb-4 border border-red-500/20">
@@ -495,6 +509,7 @@ export default function ExamPage() {
         <div className="absolute top-0 left-0 w-full h-1 bg-[#ffb902]/50 shadow-[0_0_10px_#ffb902] z-10 animate-[scan_3s_ease-in-out_infinite]"></div>
         <video width="320" height="240" ref={videoRef} autoPlay playsInline muted className="w-full h-full object-cover filter contrast-125 brightness-90" />
       </div>
+      <style jsx>{` @keyframes scan { 0% { top: 0; } 50% { top: 100%; } 100% { top: 0; } } `}</style>
 
       <header className="bg-[#001232] border-b border-white/5 h-auto py-4 md:py-0 md:h-20 flex flex-col md:flex-row items-center justify-between px-4 md:px-8 shrink-0 gap-4 md:gap-0 z-40">
         <div className="text-center md:text-left w-full md:w-auto">
@@ -537,7 +552,7 @@ export default function ExamPage() {
                     const isSelected = answers[activeQuestion.id] === option;
                     const labelPrefix = ["أ", "ب", "ت", "ث"][oIndex] || `${oIndex + 1}`;
                     return (
-                      <button key={oIndex} onClick={() => handleOptionSelect(activeQuestion.id, option)} disabled={isCamSuspended} className={`w-full min-h-[70px] px-5 py-4 rounded-2xl border-2 text-right flex items-center gap-4 group ${isSelected ? "bg-[#ffb902]/10 border-[#ffb902] text-[#ffb902]" : "bg-[#000818] border-transparent text-gray-300 hover:border-white/10"}`}>
+                      <button key={oIndex} onClick={() => handleOptionSelect(activeQuestion.id, option)} disabled={isCamSuspendedState} className={`w-full min-h-[70px] px-5 py-4 rounded-2xl border-2 text-right flex items-center gap-4 group ${isSelected ? "bg-[#ffb902]/10 border-[#ffb902] text-[#ffb902]" : "bg-[#000818] border-transparent text-gray-300 hover:border-white/10"}`}>
                          <span className={`w-10 h-10 rounded-xl flex items-center justify-center text-lg font-bold shrink-0 ${isSelected ? "bg-[#ffb902] text-[#001232]" : "bg-white/5 text-gray-500 group-hover:text-white"}`}>{labelPrefix}</span>
                          <span className={`text-lg md:text-xl flex-1 ${isSelected ? "font-bold" : "font-medium"}`}>{option}</span>
                       </button>

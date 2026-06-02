@@ -12,17 +12,20 @@ const GRACE_PERIOD_SECONDS = 120;
 export async function POST() {
   try {
     const cookieStore = cookies();
-    const sessionId = cookieStore.get('student_session')?.value;
+    // This is now the session token, NOT the student ID
+    const sessionToken = cookieStore.get('student_session')?.value;
 
-    if (!sessionId) {
+    if (!sessionToken) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    // 1. Fetch the student
-    const student = await prisma.student.findUnique({ where: { id: sessionId } });
+    // 1. Fetch the student by their active session token
+    const student = await prisma.student.findFirst({ 
+      where: { sessionToken: sessionToken } 
+    });
     
     if (!student || student.isExamTaken) {
-      return NextResponse.json({ error: 'Exam already submitted' }, { status: 400 });
+      return NextResponse.json({ error: 'Exam already submitted or session expired' }, { status: 400 });
     }
 
     // --- BUG B FIX: Server-Side Timing Enforcement ---
@@ -48,8 +51,9 @@ export async function POST() {
         where: { classLevel: student.appliedClass },
       });
 
+      // Fetch answers using student.id (NOT sessionToken)
       const studentAnswers = await prisma.studentAnswer.findMany({
-        where: { studentId: sessionId },
+        where: { studentId: student.id },
       });
 
       let correctCount = 0;
@@ -76,9 +80,9 @@ export async function POST() {
       }
     }
 
-    // 4. Lock the account and save the final verdict
+    // 4. Lock the account and save the final verdict using student.id
     await prisma.student.update({
-      where: { id: sessionId },
+      where: { id: student.id },
       data: {
         isExamTaken: true,
         finalScore: finalScore,

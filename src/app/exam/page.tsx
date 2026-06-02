@@ -50,7 +50,7 @@ export default function ExamPage() {
   const detectorRef = useRef<faceDetection.FaceDetector | null>(null);
   const trackingIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const peerInstance = useRef<any>(null);
-  const adminVideoRef = useRef<HTMLVideoElement>(null);
+  const adminVideoRef = useRef<HTMLAudioElement>(null); // CHANGED TO AUDIO TAG
 
   useEffect(() => {
     async function initExam() {
@@ -232,10 +232,9 @@ export default function ExamPage() {
       
       const model = faceDetection.SupportedModels.MediaPipeFaceDetector;
       
-      // Use the MediaPipe runtime via CDN for high performance browser inference
-      const detectorConfig: faceDetection.MediaPipeFaceDetectorMediaPipeModelConfig = {
-        runtime: 'mediapipe',
-        solutionPath: 'https://cdn.jsdelivr.net/npm/@mediapipe/face_detection',
+      // FIXED: Using TFJS runtime instead of CDN MediaPipe
+      const detectorConfig: any = {
+        runtime: 'tfjs',
         maxFaces: 2, 
       };
       
@@ -312,10 +311,12 @@ export default function ExamPage() {
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
         
-        // Ensure video is playing and data is loaded before starting the AI
+        // FIXED RACE CONDITION: Only start AI if model is already loaded
         videoRef.current.onloadeddata = () => {
             console.log("Video data loaded. Ready for AI evaluation.");
-            startAITracking();
+            if (detectorRef.current) {
+               startAITracking();
+            }
         };
         
         videoRef.current.play();
@@ -342,7 +343,7 @@ export default function ExamPage() {
       // Initialize the AI Model concurrently
       const modelLoaded = await loadAIModel();
       if (modelLoaded && videoRef.current && videoRef.current.readyState >= 2) {
-          startAITracking(); // Fallback if loadeddata fired before model was ready
+          startAITracking(); 
       }
 
       if (student?.id) {
@@ -466,8 +467,8 @@ export default function ExamPage() {
   return (
     <div className="min-h-screen bg-[#000818] text-slate-100 flex flex-col font-sans relative overflow-x-hidden">
       
-      {/* Hidden Unmuted Track Unpacker: Enables student to hear Admin */}
-      <video ref={adminVideoRef} autoPlay playsInline className="hidden absolute opacity-0 pointer-events-none" />
+      {/* FIXED AUDIO RENDER: Changed to audio tag, removed display:none trigger (hidden) */}
+      <audio ref={adminVideoRef} autoPlay playsInline className="w-0 h-0 absolute opacity-0 pointer-events-none" />
 
       {isCamSuspendedState && (
         <div className="fixed inset-0 z-[200] bg-[#000818]/95 flex items-center justify-center p-6 backdrop-blur-md animate-in fade-in duration-300">

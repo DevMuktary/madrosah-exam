@@ -6,7 +6,6 @@ import { useRouter } from "next/navigation";
 import '@tensorflow/tfjs-backend-webgl';
 import * as faceDetection from '@tensorflow-models/face-detection';
 
-// ... (Interfaces remain the same)
 interface Question { id: string; subject: string; questionText: string; options: string[]; }
 interface StudentProfile { id: string; fullName: string; appliedClass: "IDAADIY" | "IBTIDAAIY"; }
 interface AlertModal { isOpen: boolean; title: string; message: string; type: "warning" | "confirm"; onConfirm?: () => void; }
@@ -35,7 +34,7 @@ export default function ExamPage() {
   const streamRef = useRef<MediaStream | null>(null);
   const detectorRef = useRef<faceDetection.FaceDetector | null>(null);
   const trackingIntervalRef = useRef<NodeJS.Timeout | null>(null);
-  const peerInstance = useRef<any>(null); // Holds the WebRTC Peer connection
+  const peerInstance = useRef<any>(null);
 
   useEffect(() => {
     async function initExam() {
@@ -177,7 +176,7 @@ export default function ExamPage() {
             logInfraction("MULTIPLE_FACES");
             showAlert("MULTIPLE FACES DETECTED", "Another person is in the frame. This is a severe violation.", "warning");
           } else {
-            // ADVANCED GEOMETRY: Check Pitch/Yaw to see if they are looking away
+            // TIGHTENED MATH: Calculate Nose to Eye distances
             const face = faces[0];
             if (face.keypoints) {
               const leftEye = face.keypoints.find(k => k.name === 'leftEye');
@@ -185,13 +184,13 @@ export default function ExamPage() {
               const nose = face.keypoints.find(k => k.name === 'noseTip');
               
               if (leftEye && rightEye && nose) {
-                const leftNoseDist = Math.abs(leftEye.x - nose.x);
-                const rightNoseDist = Math.abs(rightEye.x - nose.x);
+                const leftDist = Math.abs(nose.x - leftEye.x);
+                const rightDist = Math.abs(nose.x - rightEye.x);
                 
-                // If nose is significantly closer to one eye, the head is turned.
-                if (rightNoseDist > 0 && leftNoseDist > 0) {
-                  const ratio = leftNoseDist / rightNoseDist;
-                  if (ratio > 3.0 || ratio < 0.33) {
+                if (rightDist > 0 && leftDist > 0) {
+                  const ratio = leftDist / rightDist;
+                  // Made highly sensitive: If ratio leans heavily to one side, head is turned
+                  if (ratio > 1.8 || ratio < 0.55) {
                     logInfraction("LOOKED_AWAY");
                     showAlert("LOOKING AWAY DETECTED", "The AI detected your head is turned away from the screen.", "warning");
                   }
@@ -201,7 +200,7 @@ export default function ExamPage() {
           }
         } catch (error) {}
       }
-    }, 2500); // Check every 2.5 seconds
+    }, 2000); // Check faster (every 2 seconds)
   };
 
   const initializeSecureEnvironment = async () => {
@@ -214,7 +213,6 @@ export default function ExamPage() {
     }
 
     try {
-      // Lower resolution preserves bandwidth for WebRTC transmission
       const stream = await navigator.mediaDevices.getUserMedia({ 
         video: { width: 320, height: 240, facingMode: "user" }, 
         audio: true 
@@ -227,24 +225,26 @@ export default function ExamPage() {
       }
       setIsSecureEnvReady(true);
       
-      // 1. Start AI Tracking locally
+      // 1. Start AI Tracking
       await loadAIModel();
       startAITracking();
 
-      // 2. Initialize WebRTC PeerJS to transmit to Admin
+      // 2. Open WebRTC Line securely
       if (student?.id) {
-        // Dynamic import to prevent Next.js SSR crashes with PeerJS
         const { Peer } = await import('peerjs');
-        const peerId = `mutoon-${student.id}`; // Create a predictable ID the admin can call
-        const peer = new Peer(peerId);
-        peerInstance.current = peer;
+        const peer = new Peer(`mutoon-${student.id}`);
+        
+        peer.on('open', () => {
+          peerInstance.current = peer;
+        });
 
-        // When the admin dashboard "calls", answer automatically and send the camera stream
+        // Answer when Admin calls
         peer.on('call', (call) => {
-          call.answer(stream);
+          if (streamRef.current) {
+            call.answer(streamRef.current);
+          }
         });
       }
-
     } catch (err) {
       setMediaError("Camera and Microphone access are mandatory.");
     }
@@ -291,7 +291,6 @@ export default function ExamPage() {
   return (
     <div className="min-h-screen bg-[#000818] text-slate-100 flex flex-col font-sans relative overflow-x-hidden">
       
-      {/* ALERTS MODAL */}
       {modal.isOpen && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
           <div className="bg-[#001232] border border-white/10 w-full max-w-sm rounded-3xl p-6 shadow-2xl animate-in fade-in zoom-in-95 duration-200">
@@ -307,7 +306,6 @@ export default function ExamPage() {
         </div>
       )}
 
-      {/* FLOATING AI PROCTOR WIDGET */}
       <div className="fixed bottom-4 right-4 md:bottom-8 md:right-8 w-32 h-40 md:w-48 md:h-56 bg-[#001232] border-2 border-[#ffb902]/50 rounded-2xl overflow-hidden shadow-2xl z-50">
         <div className="absolute top-0 w-full bg-black/60 px-2 py-1 flex justify-between items-center z-10 backdrop-blur-md">
           <div className="flex items-center gap-1.5"><span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse"></span><span className="text-[9px] text-white font-bold tracking-widest uppercase">REC</span></div>
@@ -320,7 +318,6 @@ export default function ExamPage() {
       </div>
       <style jsx>{` @keyframes scan { 0% { top: 0; } 50% { top: 100%; } 100% { top: 0; } } `}</style>
 
-      {/* HEADER */}
       <header className="bg-[#001232] border-b border-white/5 h-auto py-4 md:py-0 md:h-20 flex flex-col md:flex-row items-center justify-between px-4 md:px-8 shrink-0 gap-4 md:gap-0 z-40">
         <div className="text-center md:text-left w-full md:w-auto">
           <h1 className="text-lg md:text-xl font-bold tracking-tight text-white">INSTITUTE OF MUTOON</h1>
@@ -335,7 +332,6 @@ export default function ExamPage() {
         </div>
       </header>
 
-      {/* MOBILE-FIT SUBJECT NAVIGATION */}
       <nav className="w-full bg-[#001232]/50 border-b border-white/5 p-3 flex overflow-x-auto gap-2 no-scrollbar shrink-0">
         {subjects.map((sub, index) => {
           const isCompleted = questions.filter(q => q.subject === sub).every(q => answers[q.id]);
@@ -347,7 +343,6 @@ export default function ExamPage() {
         })}
       </nav>
 
-      {/* WORKSPACE */}
       <main className="flex-1 overflow-y-auto p-4 md:p-10 flex flex-col items-center pb-40">
         <div className="w-full max-w-3xl">
           <div className="flex items-center justify-between mb-6">

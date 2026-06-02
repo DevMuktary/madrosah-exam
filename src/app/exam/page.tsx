@@ -4,6 +4,10 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useRouter } from "next/navigation";
 
+// Import TensorFlow and Face Detection
+import '@tensorflow/tfjs-backend-webgl';
+import * as faceDetection from '@tensorflow-models/face-detection';
+
 interface Question {
   id: string;
   subject: string;
@@ -17,7 +21,6 @@ interface StudentProfile {
   appliedClass: "IDAADIY" | "IBTIDAAIY";
 }
 
-// Custom Modal Interface
 interface AlertModal {
   isOpen: boolean;
   title: string;
@@ -35,7 +38,6 @@ export default function ExamPage() {
   const [questions, setQuestions] = useState<Question[]>([]);
   const [answers, setAnswers] = useState<Record<string, string>>({});
   
-  // Navigation States (One Question Per Screen)
   const [currentSubjectIndex, setCurrentSubjectIndex] = useState(0);
   const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
 
@@ -47,8 +49,13 @@ export default function ExamPage() {
   const [infractions, setInfractions] = useState(0);
   const [modal, setModal] = useState<AlertModal>({ isOpen: false, title: "", message: "", type: "warning" });
   
+  // AI Tracking States
+  const [aiStatus, setAiStatus] = useState<"LOADING" | "ACTIVE" | "ERROR">("LOADING");
+  
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  const detectorRef = useRef<faceDetection.FaceDetector | null>(null);
+  const trackingIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
   // --- 1. INITIALIZATION ---
   useEffect(() => {
@@ -65,10 +72,7 @@ export default function ExamPage() {
         setQuestions(data.questions);
         setAnswers(data.savedAnswers || {});
         
-        const distinctSubjects = Array.from(
-          new Set(data.questions.map((q: Question) => q.subject))
-        ) as string[];
-        
+        const distinctSubjects = Array.from(new Set(data.questions.map((q: Question) => q.subject))) as string[];
         setSubjects(distinctSubjects);
         if (data.timeLeft) setTimeLeft(data.timeLeft);
 
@@ -94,11 +98,9 @@ export default function ExamPage() {
   const activeQuestions = questions.filter((q) => q.subject === subjects[currentSubjectIndex]);
 
   const handleOptionSelect = (questionId: string, option: string) => {
-    // 1. Save Answer
     setAnswers((prev) => ({ ...prev, [questionId]: option }));
     saveAnswerToDatabase(questionId, option);
 
-    // 2. Auto Advance after 500ms (gives time to see selection highlight)
     setTimeout(() => {
       if (currentQuestionIndex < activeQuestions.length - 1) {
         setCurrentQuestionIndex((prev) => prev + 1);
@@ -109,7 +111,7 @@ export default function ExamPage() {
     }, 500);
   };
 
-  // --- 3. CUSTOM ALERTS & SECURITY LOGGING ---
+  // --- 3. ALERTS & SECURITY LOGGING ---
   const logInfraction = useCallback(async (type: string) => {
     setInfractions((prev) => prev + 1);
     try {
@@ -124,24 +126,17 @@ export default function ExamPage() {
   const showAlert = (title: string, message: string, type: "warning" | "confirm" = "warning", onConfirm?: () => void) => {
     setModal({ isOpen: true, title, message, type, onConfirm });
   };
-
   const closeModal = () => setModal({ ...modal, isOpen: false });
 
-  // Browser Anti-Cheat Hooks
   useEffect(() => {
     if (loading || !isSecureEnvReady) return;
 
     const handleVisibilityChange = () => {
       if (document.visibilityState === "hidden") {
         logInfraction("TAB_SWITCH");
-        showAlert(
-          "SECURITY BREACH DETECTED", 
-          "You have switched tabs or minimized the browser. This infraction has been permanently logged to the Admin console.",
-          "warning"
-        );
+        showAlert("SECURITY BREACH DETECTED", "You have switched tabs or minimized the browser.", "warning");
       }
     };
-
     const handleContextMenu = (e: MouseEvent) => e.preventDefault();
     const handleKeyDown = (e: KeyboardEvent) => {
       if ((e.ctrlKey && e.key === "c") || (e.ctrlKey && e.key === "v") || e.key === "F12") {
@@ -177,36 +172,66 @@ export default function ExamPage() {
     return () => clearInterval(timer);
   }, [loading, isSecureEnvReady, timeLeft]);
 
-  const requestSubmission = () => {
-    showAlert(
-      "Submit Examination?", 
-      "Are you sure you want to submit your answers? This action is irreversible and will end your session.",
-      "confirm",
-      executeSubmission
-    );
-  };
-
   const executeSubmission = async () => {
     setLoading(true);
     closeModal();
     if (streamRef.current) streamRef.current.getTracks().forEach(track => track.stop());
+    if (trackingIntervalRef.current) clearInterval(trackingIntervalRef.current);
+    
     try {
       const res = await fetch("/api/exam/submit", { method: "POST" });
       if (res.ok) router.push("/");
     } catch (err) {
-      showAlert("Network Error", "Failed to submit. Please check your connection and try again.", "warning");
+      showAlert("Network Error", "Failed to submit. Please check connection.", "warning");
       setLoading(false);
     }
   };
 
-  // --- 5. SETUP GATE (Camera & Fullscreen) ---
+  // --- 5. THE AI PROCTORING ENGINE ---
+  const loadAIModel = async () => {
+    try {
+      const model = faceDetection.SupportedModels.MediaPipeFaceDetector;
+      const detectorConfig: faceDetection.MediaPipeFaceDetectorMediaPipeModelConfig = {
+        runtime: 'tfjs',
+        maxFaces: 2, // We want to know if more than 1 person is looking at the screen
+      };
+      detectorRef.current = await faceDetection.createDetector(model, detectorConfig);
+      setAiStatus("ACTIVE");
+    } catch (error) {
+      console.error("AI Model failed to load:", error);
+      setAiStatus("ERROR");
+    }
+  };
+
+  const startAITracking = () => {
+    if (trackingIntervalRef.current) clearInterval(trackingIntervalRef.current);
+    
+    trackingIntervalRef.current = setInterval(async () => {
+      if (videoRef.current && detectorRef.current && aiStatus === "ACTIVE") {
+        try {
+          const faces = await detectorRef.current.estimateFaces(videoRef.current);
+          
+          if (faces.length === 0) {
+            // No face detected
+            logInfraction("FACE_NOT_DETECTED");
+            showAlert("FACE NOT DETECTED", "The AI cannot see your face. Please look directly at the camera.", "warning");
+          } else if (faces.length > 1) {
+            // Multiple faces detected
+            logInfraction("MULTIPLE_FACES");
+            showAlert("MULTIPLE FACES DETECTED", "Another person is in the frame. This is a severe violation.", "warning");
+          }
+        } catch (error) {
+          // Ignore transient AI evaluation errors
+        }
+      }
+    }, 3000); // Analyze every 3 seconds
+  };
+
   const initializeSecureEnvironment = async () => {
     setMediaError("");
-    
-    // Safari-safe Fullscreen
     const element = document.documentElement;
     if (element.requestFullscreen) {
-      try { await element.requestFullscreen(); } catch (err) { console.warn("Fullscreen denied."); }
+      try { await element.requestFullscreen(); } catch (err) {}
     } else if ((element as any).webkitRequestFullscreen) {
       try { await (element as any).webkitRequestFullscreen(); } catch (err) {}
     }
@@ -216,13 +241,26 @@ export default function ExamPage() {
       streamRef.current = stream;
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
-        videoRef.current.play(); // Force play for Safari
+        videoRef.current.play();
       }
       setIsSecureEnvReady(true);
+      
+      // Load AI Model and Start Tracking
+      await loadAIModel();
+      startAITracking();
+
     } catch (err) {
-      setMediaError("Camera and Microphone access are mandatory. Please allow permissions in your browser URL bar.");
+      setMediaError("Camera and Microphone access are mandatory.");
     }
   };
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      if (trackingIntervalRef.current) clearInterval(trackingIntervalRef.current);
+      if (streamRef.current) streamRef.current.getTracks().forEach(track => track.stop());
+    };
+  }, []);
 
   const formatTime = (seconds: number) => {
     const mins = Math.floor(seconds / 60);
@@ -238,7 +276,6 @@ export default function ExamPage() {
     );
   }
 
-  // Mandatory Setup Screen
   if (!isSecureEnvReady) {
     return (
       <div className="min-h-screen bg-[#001232] flex flex-col items-center justify-center p-6 text-center">
@@ -250,7 +287,7 @@ export default function ExamPage() {
           </div>
           <h2 className="text-2xl font-bold text-white mb-4">Proctoring Setup</h2>
           <p className="text-gray-400 text-sm mb-6 leading-relaxed">
-            Live video, audio monitoring, and full-screen lockdown are required. Your feed is securely transmitted.
+            Live video, audio monitoring, and full-screen lockdown are required. Your feed is securely transmitted and AI-monitored.
           </p>
           {mediaError && (
             <div className="mb-6 p-4 bg-red-500/10 border border-red-500/20 rounded-xl">
@@ -273,7 +310,7 @@ export default function ExamPage() {
   return (
     <div className="min-h-screen bg-[#000818] text-slate-100 flex flex-col font-sans relative overflow-x-hidden">
       
-      {/* CUSTOM BEAUTIFUL MODAL */}
+      {/* ALERTS MODAL */}
       {modal.isOpen && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
           <div className="bg-[#001232] border border-white/10 w-full max-w-sm rounded-3xl p-6 shadow-2xl animate-in fade-in zoom-in-95 duration-200">
@@ -300,31 +337,28 @@ export default function ExamPage() {
         </div>
       )}
 
-      {/* FLOATING PROCTOR WIDGET (With Active Scanning Animation) */}
+      {/* FLOATING AI PROCTOR WIDGET */}
       <div className="fixed bottom-4 right-4 md:bottom-8 md:right-8 w-32 h-40 md:w-48 md:h-56 bg-[#001232] border-2 border-[#ffb902]/50 rounded-2xl overflow-hidden shadow-2xl z-50">
         <div className="absolute top-0 w-full bg-black/60 px-2 py-1 flex justify-between items-center z-10 backdrop-blur-md">
           <div className="flex items-center gap-1.5">
             <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse"></span>
             <span className="text-[9px] text-white font-bold tracking-widest uppercase">REC</span>
           </div>
-          <span className="text-[9px] text-[#ffb902] font-mono">AI ACTIVE</span>
+          <span className={`text-[9px] font-mono ${aiStatus === "ACTIVE" ? "text-[#ffb902]" : aiStatus === "LOADING" ? "text-blue-400" : "text-red-500"}`}>
+            {aiStatus === "ACTIVE" ? "AI ACTIVE" : aiStatus === "LOADING" ? "LOADING..." : "AI ERROR"}
+          </span>
         </div>
-        {/* Scanning Line Animation */}
         <div className="absolute top-0 left-0 w-full h-1 bg-[#ffb902]/50 shadow-[0_0_10px_#ffb902] z-10 animate-[scan_3s_ease-in-out_infinite]"></div>
         <video ref={videoRef} autoPlay playsInline muted className="w-full h-full object-cover filter contrast-125 brightness-90" />
       </div>
 
-      <style jsx>{`
-        @keyframes scan { 0% { top: 0; } 50% { top: 100%; } 100% { top: 0; } }
-      `}</style>
+      <style jsx>{` @keyframes scan { 0% { top: 0; } 50% { top: 100%; } 100% { top: 0; } } `}</style>
 
       {/* HEADER */}
       <header className="bg-[#001232] border-b border-white/5 h-auto py-4 md:py-0 md:h-20 flex flex-col md:flex-row items-center justify-between px-4 md:px-8 shrink-0 gap-4 md:gap-0 z-40">
         <div className="text-center md:text-left w-full md:w-auto">
           <h1 className="text-lg md:text-xl font-bold tracking-tight text-white">INSTITUTE OF MUTOON</h1>
-          <p className="text-xs text-[#ffb902] font-bold tracking-widest uppercase mt-0.5 opacity-80">
-            {student?.fullName}
-          </p>
+          <p className="text-xs text-[#ffb902] font-bold tracking-widest uppercase mt-0.5 opacity-80">{student?.fullName}</p>
         </div>
         <div className="flex items-center justify-between w-full md:w-auto gap-4 md:gap-6">
           <div className="bg-[#000818] border border-white/10 px-4 py-2 rounded-xl flex items-center gap-3">
@@ -333,10 +367,7 @@ export default function ExamPage() {
               {formatTime(timeLeft)}
             </span>
           </div>
-          <button
-            onClick={requestSubmission}
-            className="h-10 md:h-12 px-6 bg-[#ffb902] text-[#001232] font-bold text-xs md:text-sm uppercase tracking-wider rounded-xl hover:bg-[#ffc833] transition-all"
-          >
+          <button onClick={() => showAlert("Submit Examination?", "Are you sure you want to submit your answers? This action is irreversible.", "confirm", executeSubmission)} className="h-10 md:h-12 px-6 bg-[#ffb902] text-[#001232] font-bold text-xs md:text-sm uppercase tracking-wider rounded-xl hover:bg-[#ffc833]">
             Submit
           </button>
         </div>
@@ -347,29 +378,16 @@ export default function ExamPage() {
         {subjects.map((sub, index) => {
           const isCompleted = questions.filter(q => q.subject === sub).every(q => answers[q.id]);
           return (
-            <button
-              key={sub}
-              onClick={() => {
-                setCurrentSubjectIndex(index);
-                setCurrentQuestionIndex(0); // Reset to Q1 when switching subjects
-              }}
-              className={`whitespace-nowrap px-5 py-2.5 rounded-xl font-bold text-xs md:text-sm transition-all flex items-center gap-2 border ${
-                currentSubjectIndex === index
-                  ? "bg-white/10 text-[#ffb902] border-[#ffb902]/30"
-                  : "bg-transparent text-gray-400 border-transparent hover:bg-white/5"
-              }`}
-            >
-              {sub}
-              {isCompleted && <span className="w-1.5 h-1.5 rounded-full bg-[#ffb902]"></span>}
+            <button key={sub} onClick={() => { setCurrentSubjectIndex(index); setCurrentQuestionIndex(0); }} className={`whitespace-nowrap px-5 py-2.5 rounded-xl font-bold text-xs md:text-sm flex items-center gap-2 border ${currentSubjectIndex === index ? "bg-white/10 text-[#ffb902] border-[#ffb902]/30" : "bg-transparent text-gray-400 border-transparent hover:bg-white/5"}`}>
+              {sub} {isCompleted && <span className="w-1.5 h-1.5 rounded-full bg-[#ffb902]"></span>}
             </button>
           );
         })}
       </nav>
 
-      {/* ONE-QUESTION-PER-SCREEN WORKSPACE */}
+      {/* WORKSPACE */}
       <main className="flex-1 overflow-y-auto p-4 md:p-10 flex flex-col items-center pb-40">
         <div className="w-full max-w-3xl">
-          
           <div className="flex items-center justify-between mb-6">
             <h2 className="text-xl md:text-2xl font-black text-white">{subjects[currentSubjectIndex]}</h2>
             <span className="text-xs font-bold text-gray-400 bg-white/5 px-3 py-1.5 rounded-lg border border-white/5">
@@ -378,65 +396,29 @@ export default function ExamPage() {
           </div>
 
           {activeQuestion && (
-            <div className="bg-[#001232] border border-white/5 rounded-3xl p-6 md:p-10 shadow-2xl relative">
+            <div className="bg-[#001232] border border-white/5 rounded-3xl p-6 md:p-10 shadow-2xl">
               <div className="flex flex-col gap-6" dir="rtl">
-                
-                {/* Question Text */}
-                <p className="text-xl md:text-2xl font-bold text-white leading-relaxed">
-                  {activeQuestion.questionText}
-                </p>
-
-                {/* Options Grid */}
+                <p className="text-xl md:text-2xl font-bold text-white leading-relaxed">{activeQuestion.questionText}</p>
                 <div className="flex flex-col gap-3 mt-4">
                   {activeQuestion.options.map((option, oIndex) => {
                     const isSelected = answers[activeQuestion.id] === option;
                     const labelPrefix = ["أ", "ب", "ت", "ث"][oIndex] || `${oIndex + 1}`;
-                    
                     return (
-                      <button
-                         key={oIndex}
-                         onClick={() => handleOptionSelect(activeQuestion.id, option)}
-                         className={`w-full min-h-[70px] px-5 py-4 rounded-2xl border-2 text-right transition-all duration-150 flex items-center gap-4 group ${
-                           isSelected
-                             ? "bg-[#ffb902]/10 border-[#ffb902] text-[#ffb902]"
-                             : "bg-[#000818] border-transparent text-gray-300 hover:border-white/10 active:scale-[0.98]"
-                         }`}
-                      >
-                         <span className={`w-10 h-10 rounded-xl flex items-center justify-center text-lg font-bold shrink-0 transition-colors ${
-                           isSelected ? "bg-[#ffb902] text-[#001232]" : "bg-white/5 text-gray-500 group-hover:text-white"
-                         }`}>
-                           {labelPrefix}
-                         </span>
-                         <span className={`text-lg md:text-xl flex-1 ${isSelected ? "font-bold" : "font-medium"}`}>
-                           {option}
-                         </span>
+                      <button key={oIndex} onClick={() => handleOptionSelect(activeQuestion.id, option)} className={`w-full min-h-[70px] px-5 py-4 rounded-2xl border-2 text-right flex items-center gap-4 group ${isSelected ? "bg-[#ffb902]/10 border-[#ffb902] text-[#ffb902]" : "bg-[#000818] border-transparent text-gray-300 hover:border-white/10"}`}>
+                         <span className={`w-10 h-10 rounded-xl flex items-center justify-center text-lg font-bold shrink-0 ${isSelected ? "bg-[#ffb902] text-[#001232]" : "bg-white/5 text-gray-500 group-hover:text-white"}`}>{labelPrefix}</span>
+                         <span className={`text-lg md:text-xl flex-1 ${isSelected ? "font-bold" : "font-medium"}`}>{option}</span>
                       </button>
                     );
                   })}
                 </div>
-
               </div>
             </div>
           )}
 
-          {/* Bottom Navigation Controls */}
           <div className="flex justify-between items-center mt-8 px-2">
-            <button
-              onClick={() => setCurrentQuestionIndex(prev => Math.max(0, prev - 1))}
-              disabled={currentQuestionIndex === 0}
-              className="px-6 py-3 rounded-xl font-bold text-sm bg-white/5 text-white disabled:opacity-30 disabled:cursor-not-allowed hover:bg-white/10 transition-all"
-            >
-              Previous
-            </button>
-            <button
-              onClick={() => setCurrentQuestionIndex(prev => Math.min(activeQuestions.length - 1, prev + 1))}
-              disabled={currentQuestionIndex === activeQuestions.length - 1}
-              className="px-6 py-3 rounded-xl font-bold text-sm bg-white/5 text-white disabled:opacity-30 disabled:cursor-not-allowed hover:bg-white/10 transition-all"
-            >
-              Skip / Next
-            </button>
+            <button onClick={() => setCurrentQuestionIndex(prev => Math.max(0, prev - 1))} disabled={currentQuestionIndex === 0} className="px-6 py-3 rounded-xl font-bold text-sm bg-white/5 text-white disabled:opacity-30">Previous</button>
+            <button onClick={() => setCurrentQuestionIndex(prev => Math.min(activeQuestions.length - 1, prev + 1))} disabled={currentQuestionIndex === activeQuestions.length - 1} className="px-6 py-3 rounded-xl font-bold text-sm bg-white/5 text-white disabled:opacity-30">Skip / Next</button>
           </div>
-
         </div>
       </main>
     </div>

@@ -5,6 +5,10 @@ import { cookies } from 'next/headers';
 
 const prisma = new PrismaClient();
 
+// 60 minutes for the exam + 2 minutes grace period for network latency
+const EXAM_DURATION_SECONDS = 3600; 
+const GRACE_PERIOD_SECONDS = 120; 
+
 export async function POST() {
   try {
     const cookieStore = cookies();
@@ -21,44 +25,58 @@ export async function POST() {
       return NextResponse.json({ error: 'Exam already submitted' }, { status: 400 });
     }
 
-    // 2. Fetch all questions for their class level
-    const questions = await prisma.question.findMany({
-      where: { classLevel: student.appliedClass },
-    });
-
-    // 3. Fetch all their saved answers
-    const studentAnswers = await prisma.studentAnswer.findMany({
-      where: { studentId: sessionId },
-    });
-
-    // 4. The Grading Engine
-    let correctCount = 0;
-    
-    questions.forEach((question) => {
-      const studentAnswer = studentAnswers.find((ans) => ans.questionId === question.id);
-      if (studentAnswer && studentAnswer.selectedOption === question.correctAnswer) {
-        correctCount++;
-      }
-    });
-
-    // Calculate percentage (rounded to nearest whole number)
-    const totalQuestions = questions.length;
-    const finalScore = totalQuestions > 0 ? Math.round((correctCount / totalQuestions) * 100) : 0;
-
-    // 5. The Placement Logic
+    // --- BUG B FIX: Server-Side Timing Enforcement ---
+    let finalScore = 0;
     let placementStatus = "";
+    let isDisqualified = false;
 
-    if (student.appliedClass === "IBTIDAAIY") {
-      placementStatus = "Eligible for Ibtidaaiy";
-    } else if (student.appliedClass === "IDAADIY") {
-      if (finalScore >= 50) {
-        placementStatus = "Eligible for Idaadiy";
-      } else {
-        placementStatus = "Eligible for Ibtidaaiy Only"; // Fallback logic
+    if (student.examStartedAt) {
+      const elapsedSeconds = Math.floor((new Date().getTime() - student.examStartedAt.getTime()) / 1000);
+      
+      // If they took longer than 62 minutes, they bypassed the timer
+      if (elapsedSeconds > (EXAM_DURATION_SECONDS + GRACE_PERIOD_SECONDS)) {
+        isDisqualified = true;
+        finalScore = 0;
+        placementStatus = "DISQUALIFIED: Time Limit Exceeded";
+        console.warn(`Student ${student.fullName} disqualified for time manipulation.`);
       }
     }
 
-    // 6. Lock the account and save the final verdict
+    // 2. The Grading Engine (Only grades if they are not disqualified)
+    if (!isDisqualified) {
+      const questions = await prisma.question.findMany({
+        where: { classLevel: student.appliedClass },
+      });
+
+      const studentAnswers = await prisma.studentAnswer.findMany({
+        where: { studentId: sessionId },
+      });
+
+      let correctCount = 0;
+      
+      questions.forEach((question) => {
+        const studentAnswer = studentAnswers.find((ans) => ans.questionId === question.id);
+        if (studentAnswer && studentAnswer.selectedOption === question.correctAnswer) {
+          correctCount++;
+        }
+      });
+
+      const totalQuestions = questions.length;
+      finalScore = totalQuestions > 0 ? Math.round((correctCount / totalQuestions) * 100) : 0;
+
+      // 3. The Placement Logic
+      if (student.appliedClass === "IBTIDAAIY") {
+        placementStatus = "Eligible for Ibtidaaiy";
+      } else if (student.appliedClass === "IDAADIY") {
+        if (finalScore >= 50) {
+          placementStatus = "Eligible for Idaadiy";
+        } else {
+          placementStatus = "Eligible for Ibtidaaiy Only"; // Fallback logic
+        }
+      }
+    }
+
+    // 4. Lock the account and save the final verdict
     await prisma.student.update({
       where: { id: sessionId },
       data: {
@@ -68,10 +86,15 @@ export async function POST() {
       },
     });
 
-    // 7. Destroy the session cookie
+    // 5. Destroy the session cookie
     cookies().delete('student_session');
 
-    return NextResponse.json({ success: true, score: finalScore });
+    // Send the final result back to the frontend
+    return NextResponse.json({ 
+      success: true, 
+      score: finalScore,
+      placement: placementStatus
+    });
 
   } catch (error) {
     console.error('Submit Exam Error:', error);

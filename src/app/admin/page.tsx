@@ -11,9 +11,10 @@ interface StudentMonitor {
   infractionCount: number; recentLogs: ExamLog[];
 }
 
-// Fixed StreamPlayer to force playback when WebRTC bytes arrive
+// Upgraded StreamPlayer with Individual Mute/Unmute Controls
 const StreamPlayer = ({ stream }: { stream: MediaStream }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
+  const [isMuted, setIsMuted] = useState(true); // Muted by default to prevent echo
   
   useEffect(() => {
     if (videoRef.current && stream) {
@@ -25,13 +26,24 @@ const StreamPlayer = ({ stream }: { stream: MediaStream }) => {
   }, [stream]);
 
   return (
-    <video 
-      ref={videoRef} 
-      autoPlay 
-      playsInline 
-      muted 
-      className="absolute inset-0 w-full h-full object-cover filter contrast-125 brightness-90 z-0" 
-    />
+    <div className="absolute inset-0 w-full h-full z-0 group">
+      <video 
+        ref={videoRef} 
+        autoPlay 
+        playsInline 
+        muted={isMuted} 
+        className="w-full h-full object-cover filter contrast-125 brightness-90" 
+      />
+      {/* Admin Listen-In Button (Appears on Hover) */}
+      <button 
+        onClick={(e) => { e.stopPropagation(); setIsMuted(!isMuted); }}
+        className={`absolute bottom-2 right-2 p-2 rounded-lg text-xs font-bold uppercase tracking-widest transition-all opacity-0 group-hover:opacity-100 shadow-xl ${
+          isMuted ? "bg-black/60 text-white hover:bg-black/80" : "bg-red-500 text-white animate-pulse"
+        }`}
+      >
+        {isMuted ? "🔇 Muted" : "🔊 Listening"}
+      </button>
+    </div>
   );
 };
 
@@ -39,11 +51,25 @@ export default function AdminDashboard() {
   const [students, setStudents] = useState<StudentMonitor[]>([]);
   const [loading, setLoading] = useState(true);
   
+  // WebRTC & Audio States
   const [isPeerReady, setIsPeerReady] = useState(false);
   const [streams, setStreams] = useState<Record<string, MediaStream>>({});
+  const [adminMicActive, setAdminMicActive] = useState(false);
+  
   const peerInstance = useRef<any>(null);
   const activeCalls = useRef<Set<string>>(new Set());
+  const adminAudioTrackRef = useRef<MediaStreamTrack | null>(null);
 
+  // 1. Fetch Admin Microphone on Load
+  useEffect(() => {
+    navigator.mediaDevices.getUserMedia({ audio: true }).then((stream) => {
+      const track = stream.getAudioTracks()[0];
+      track.enabled = false; // Start muted
+      adminAudioTrackRef.current = track;
+    }).catch(err => console.warn("Admin mic access denied:", err));
+  }, []);
+
+  // 2. Database Polling
   useEffect(() => {
     const fetchDashboardData = async () => {
       try {
@@ -60,6 +86,7 @@ export default function AdminDashboard() {
     return () => clearInterval(interval);
   }, []);
 
+  // 3. Initialize PeerJS
   useEffect(() => {
     let peer: any;
     const initPeer = async () => {
@@ -71,47 +98,54 @@ export default function AdminDashboard() {
       });
     };
     initPeer();
-
     return () => { if (peer) peer.destroy(); };
   }, []);
 
+  // 4. Calling Engine (Now with Admin Audio Attached)
   useEffect(() => {
     if (!isPeerReady || !peerInstance.current || students.length === 0) return;
 
-    // THE FIX: A completely silent, browser-safe dummy canvas stream
     const canvas = document.createElement("canvas");
     canvas.width = 320;
     canvas.height = 240;
     const ctx = canvas.getContext("2d");
-    if (ctx) {
-      ctx.fillStyle = "black";
-      ctx.fillRect(0, 0, 320, 240);
+    if (ctx) { ctx.fillStyle = "black"; ctx.fillRect(0, 0, 320, 240); }
+    const outStream = canvas.captureStream(15); 
+    
+    // Attach Admin mic to the outgoing stream (even if currently muted)
+    if (adminAudioTrackRef.current) {
+      outStream.addTrack(adminAudioTrackRef.current);
     }
-    const dummyStream = canvas.captureStream(15); 
 
     students.forEach((student) => {
       if (student.status === "ACTIVE" && !activeCalls.current.has(student.id)) {
         activeCalls.current.add(student.id);
 
-        const call = peerInstance.current.call(`mutoon-${student.id}`, dummyStream);
+        const call = peerInstance.current.call(`mutoon-${student.id}`, outStream);
 
         if (call) {
           call.on("stream", (remoteStream: MediaStream) => {
             setStreams((prev) => ({ ...prev, [student.id]: remoteStream }));
           });
-
           call.on("close", () => {
             setStreams((prev) => { const newStreams = { ...prev }; delete newStreams[student.id]; return newStreams; });
             activeCalls.current.delete(student.id);
           });
-          
-          call.on("error", () => {
-             activeCalls.current.delete(student.id);
-          });
+          call.on("error", () => { activeCalls.current.delete(student.id); });
         }
       }
     });
   }, [students, isPeerReady]);
+
+  // Toggle Admin Mic Broadcast
+  const toggleAdminBroadcast = () => {
+    if (adminAudioTrackRef.current) {
+      adminAudioTrackRef.current.enabled = !adminAudioTrackRef.current.enabled;
+      setAdminMicActive(adminAudioTrackRef.current.enabled);
+    } else {
+      alert("Microphone not found. Please allow permissions in your browser URL bar and refresh.");
+    }
+  };
 
   const activeCount = students.filter(s => s.status === "ACTIVE").length;
   const completedCount = students.filter(s => s.status === "COMPLETED").length;
@@ -137,14 +171,25 @@ export default function AdminDashboard() {
           </div>
         </div>
 
-        <div className="hidden md:flex items-center gap-4">
+        <div className="hidden md:flex items-center gap-6">
+          
+          {/* THE NEW BROADCAST BUTTON */}
+          <button
+            onClick={toggleAdminBroadcast}
+            className={`h-11 px-6 rounded-xl font-bold text-xs uppercase tracking-wider transition-all flex items-center gap-2 border shadow-lg ${
+              adminMicActive
+                ? "bg-red-500 text-white border-red-400 shadow-[0_0_20px_rgba(239,68,68,0.4)] animate-pulse"
+                : "bg-[#000818] text-gray-400 border-white/10 hover:bg-white/5 hover:text-white"
+            }`}
+          >
+            {adminMicActive ? "🔴 Broadcasting to All" : "🎙️ Mic Off"}
+          </button>
+
+          <div className="h-8 w-px bg-white/10 mx-2"></div>
+
           <div className="bg-[#000818] border border-white/5 px-5 py-2 rounded-xl flex flex-col items-center">
-            <span className="text-[10px] uppercase font-bold text-gray-500 tracking-widest">Active Sessions</span>
+            <span className="text-[10px] uppercase font-bold text-gray-500 tracking-widest">Active</span>
             <span className="text-lg font-black text-blue-400">{activeCount}</span>
-          </div>
-          <div className="bg-[#000818] border border-white/5 px-5 py-2 rounded-xl flex flex-col items-center">
-            <span className="text-[10px] uppercase font-bold text-gray-500 tracking-widest">Completed</span>
-            <span className="text-lg font-black text-emerald-400">{completedCount}</span>
           </div>
           <div className="bg-red-500/10 border border-red-500/20 px-5 py-2 rounded-xl flex flex-col items-center shadow-inner">
             <span className="text-[10px] uppercase font-bold text-red-400 tracking-widest flex items-center gap-1">
@@ -186,7 +231,7 @@ export default function AdminDashboard() {
                         </div>
                       )}
                       
-                      <span className="absolute bottom-2 left-2 text-[10px] text-white font-bold uppercase tracking-widest z-10 flex items-center gap-1.5 bg-black/60 px-2 py-1 rounded-md backdrop-blur-sm">
+                      <span className="absolute bottom-2 left-2 text-[10px] text-white font-bold uppercase tracking-widest z-10 flex items-center gap-1.5 bg-black/60 px-2 py-1 rounded-md backdrop-blur-sm pointer-events-none">
                         <span className={`w-1.5 h-1.5 rounded-full ${streams[student.id] ? "bg-red-500 animate-pulse" : "bg-[#ffb902]"}`}></span>
                         {streams[student.id] ? "LIVE" : "CONNECTING..."}
                       </span>
@@ -201,13 +246,13 @@ export default function AdminDashboard() {
                   )}
 
                   {isCheating && (
-                    <div className="absolute top-2 right-2 bg-red-500 text-white text-[10px] font-bold px-2 py-1 rounded-md uppercase tracking-wider animate-pulse shadow-lg z-20">
+                    <div className="absolute top-2 right-2 bg-red-500 text-white text-[10px] font-bold px-2 py-1 rounded-md uppercase tracking-wider animate-pulse shadow-lg z-20 pointer-events-none">
                       {student.infractionCount} Flags
                     </div>
                   )}
                 </div>
 
-                <div className="p-4 flex flex-col flex-1 bg-gradient-to-b from-transparent to-[#000818]/50 z-10">
+                <div className="p-4 flex flex-col flex-1 bg-gradient-to-b from-transparent to-[#000818]/50 z-10 pointer-events-none">
                   <h3 className="text-sm font-bold text-white truncate" title={student.fullName}>
                     {student.fullName}
                   </h3>

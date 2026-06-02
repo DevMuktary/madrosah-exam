@@ -66,7 +66,7 @@ export default function AdminDashboard() {
       audioTrack.enabled = false; 
       adminAudioTrackRef.current = audioTrack;
 
-      // FIXED: Animated dummy canvas to keep video track alive and audio synced
+      // Animated dummy canvas to keep video track alive and audio synced for WebRTC
       const canvas = document.createElement("canvas");
       canvas.width = 2;
       canvas.height = 2;
@@ -113,7 +113,36 @@ export default function AdminDashboard() {
     let peer: any;
     const initPeer = async () => {
       const { Peer } = await import("peerjs");
-      peer = new Peer(); 
+      
+      // Initialize PeerJS with your exact Metered TURN servers
+      peer = new Peer(undefined, {
+        config: {
+          iceServers: [
+            { urls: "stun:stun.relay.metered.ca:80" },
+            {
+              urls: "turn:standard.relay.metered.ca:80",
+              username: "6e62e928e722942902dfedbe",
+              credential: "BWse/aAe8PrQv5h7",
+            },
+            {
+              urls: "turn:standard.relay.metered.ca:80?transport=tcp",
+              username: "6e62e928e722942902dfedbe",
+              credential: "BWse/aAe8PrQv5h7",
+            },
+            {
+              urls: "turn:standard.relay.metered.ca:443",
+              username: "6e62e928e722942902dfedbe",
+              credential: "BWse/aAe8PrQv5h7",
+            },
+            {
+              urls: "turns:standard.relay.metered.ca:443?transport=tcp",
+              username: "6e62e928e722942902dfedbe",
+              credential: "BWse/aAe8PrQv5h7",
+            },
+          ],
+        },
+      });
+      
       peer.on("open", () => {
         peerInstance.current = peer;
         setIsPeerReady(true);

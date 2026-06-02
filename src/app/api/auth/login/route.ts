@@ -3,6 +3,7 @@
 import { NextResponse } from 'next/server';
 import { PrismaClient } from '@prisma/client';
 import { cookies } from 'next/headers';
+import crypto from 'crypto'; // Native Node module for generating random UUIDs
 
 // Instantiate Prisma securely
 const prisma = new PrismaClient();
@@ -46,9 +47,18 @@ export async function POST(request: Request) {
       );
     }
 
-    // 5. Success: Create a secure session cookie
+    // 5. Generate a new unique session token for this login attempt
+    const sessionToken = crypto.randomUUID();
+
+    // 6. Update the student in the database with the new token (Invalidates old phones)
+    await prisma.student.update({
+      where: { id: student.id },
+      data: { sessionToken: sessionToken },
+    });
+
+    // 7. Success: Create a secure session cookie USING THE TOKEN, NOT THE ID
     // HttpOnly prevents client-side scripts from reading the cookie (XSS protection)
-    cookies().set('student_session', student.id, {
+    cookies().set('student_session', sessionToken, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
       sameSite: 'strict',

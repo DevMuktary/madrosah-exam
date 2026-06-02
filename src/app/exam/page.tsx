@@ -42,6 +42,8 @@ export default function ExamPage() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const peerInstance = useRef<any>(null);
+  
+  // Audio tag used so browsers don't suspend the DOM element when hidden
   const adminVideoRef = useRef<HTMLAudioElement>(null); 
 
   useEffect(() => {
@@ -255,7 +257,35 @@ export default function ExamPage() {
       // Connect to the Admin Room via PeerJS
       if (student?.id) {
         const { Peer } = await import('peerjs');
-        const peer = new Peer(`mutoon-${student.id}`);
+        
+        // Initialize PeerJS with your exact Metered TURN servers
+        const peer = new Peer(`mutoon-${student.id}`, {
+          config: {
+            iceServers: [
+              { urls: "stun:stun.relay.metered.ca:80" },
+              {
+                urls: "turn:standard.relay.metered.ca:80",
+                username: "6e62e928e722942902dfedbe",
+                credential: "BWse/aAe8PrQv5h7",
+              },
+              {
+                urls: "turn:standard.relay.metered.ca:80?transport=tcp",
+                username: "6e62e928e722942902dfedbe",
+                credential: "BWse/aAe8PrQv5h7",
+              },
+              {
+                urls: "turn:standard.relay.metered.ca:443",
+                username: "6e62e928e722942902dfedbe",
+                credential: "BWse/aAe8PrQv5h7",
+              },
+              {
+                urls: "turns:standard.relay.metered.ca:443?transport=tcp",
+                username: "6e62e928e722942902dfedbe",
+                credential: "BWse/aAe8PrQv5h7",
+              },
+            ],
+          },
+        });
         
         peer.on('open', () => { peerInstance.current = peer; });
         peer.on('call', (call) => { 
@@ -374,6 +404,7 @@ export default function ExamPage() {
   return (
     <div className="min-h-screen bg-[#000818] text-slate-100 flex flex-col font-sans relative overflow-x-hidden">
       
+      {/* Hidden audio element to receive admin broadcasts */}
       <audio ref={adminVideoRef} autoPlay playsInline className="w-0 h-0 absolute opacity-0 pointer-events-none" />
 
       {isCamSuspendedState && (

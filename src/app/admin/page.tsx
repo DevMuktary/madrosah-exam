@@ -22,7 +22,6 @@ interface StudentMonitor {
   recentLogs: ExamLog[];
 }
 
-// Helper component to securely attach MediaStreams to video tags in React
 const StreamPlayer = ({ stream }: { stream: MediaStream }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   
@@ -48,11 +47,12 @@ export default function AdminDashboard() {
   const [loading, setLoading] = useState(true);
   
   // WebRTC States
+  const [isPeerReady, setIsPeerReady] = useState(false);
   const [streams, setStreams] = useState<Record<string, MediaStream>>({});
   const peerInstance = useRef<any>(null);
   const activeCalls = useRef<Set<string>>(new Set());
 
-  // 1. Poll the database for infractions and status updates
+  // 1. Database Polling
   useEffect(() => {
     const fetchDashboardData = async () => {
       try {
@@ -61,9 +61,7 @@ export default function AdminDashboard() {
           const data = await res.json();
           setStudents(data.students);
         }
-      } catch (err) {
-        console.error("Dashboard sync error");
-      } finally {
+      } catch (err) {} finally {
         setLoading(false);
       }
     };
@@ -73,13 +71,18 @@ export default function AdminDashboard() {
     return () => clearInterval(interval);
   }, []);
 
-  // 2. Initialize the Admin's WebRTC Receiver
+  // 2. Initialize PeerJS properly (Wait for Open event)
   useEffect(() => {
     let peer: any;
     const initPeer = async () => {
       const { Peer } = await import("peerjs");
-      peer = new Peer("mutoon-admin"); // Dedicated Admin ID
-      peerInstance.current = peer;
+      // Admin generates a random caller ID so we don't have clashing instances
+      peer = new Peer(); 
+      
+      peer.on("open", () => {
+        peerInstance.current = peer;
+        setIsPeerReady(true);
+      });
     };
     initPeer();
 
@@ -88,21 +91,20 @@ export default function AdminDashboard() {
     };
   }, []);
 
-  // 3. Connect to students when they come online
+  // 3. Robust Calling Engine
   useEffect(() => {
-    if (!peerInstance.current || students.length === 0) return;
+    if (!isPeerReady || !peerInstance.current || students.length === 0) return;
 
-    // Generate a 1-pixel dummy stream to satisfy WebRTC's calling requirements
-    const canvas = document.createElement("canvas");
-    canvas.width = 1;
-    canvas.height = 1;
-    const dummyStream = canvas.captureStream(1);
+    // Bulletproof dummy stream: AudioContext (fixes Safari issues)
+    const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+    const ctx = new AudioContextClass();
+    const dest = ctx.createMediaStreamDestination();
+    const dummyStream = dest.stream;
 
     students.forEach((student) => {
       if (student.status === "ACTIVE" && !activeCalls.current.has(student.id)) {
         activeCalls.current.add(student.id);
 
-        // Call the specific student's ID
         const call = peerInstance.current.call(`mutoon-${student.id}`, dummyStream);
 
         if (call) {
@@ -125,7 +127,7 @@ export default function AdminDashboard() {
         }
       }
     });
-  }, [students]);
+  }, [students, isPeerReady]);
 
   const activeCount = students.filter(s => s.status === "ACTIVE").length;
   const completedCount = students.filter(s => s.status === "COMPLETED").length;
@@ -142,7 +144,6 @@ export default function AdminDashboard() {
   return (
     <div className="min-h-screen bg-[#000818] text-slate-100 font-sans flex flex-col h-screen overflow-hidden">
       
-      {/* COMMAND CENTER HEADER */}
       <header className="bg-[#001232] border-b border-white/10 h-20 flex items-center justify-between px-6 md:px-8 shrink-0 z-40 shadow-xl">
         <div className="flex items-center gap-4">
           <div className="w-10 h-10 bg-[#ffb902]/10 rounded-xl flex items-center justify-center border border-[#ffb902]/30 shadow-[0_0_15px_rgba(255,185,2,0.2)]">
@@ -174,7 +175,6 @@ export default function AdminDashboard() {
         </div>
       </header>
 
-      {/* 20-STUDENT LIVE GRID */}
       <main className="flex-1 overflow-y-auto p-4 md:p-8">
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-5 gap-4 md:gap-6 auto-rows-max max-w-[1600px] mx-auto">
           
@@ -186,15 +186,10 @@ export default function AdminDashboard() {
               <div 
                 key={student.id} 
                 className={`relative flex flex-col bg-[#001232] rounded-2xl overflow-hidden transition-all duration-300 ${
-                  isCheating 
-                    ? "border-2 border-red-500 shadow-[0_0_20px_rgba(239,68,68,0.3)]" 
-                    : isFinished 
-                      ? "border border-emerald-500/30 opacity-80" 
-                      : "border border-white/10 hover:border-white/30"
+                  isCheating ? "border-2 border-red-500 shadow-[0_0_20px_rgba(239,68,68,0.3)]" : isFinished ? "border border-emerald-500/30 opacity-80" : "border border-white/10 hover:border-white/30"
                 }`}
               >
                 
-                {/* Simulated Video Stream Area */}
                 <div className="relative w-full aspect-video bg-[#000818] border-b border-white/5 flex flex-col items-center justify-center overflow-hidden">
                   
                   {student.status === "PENDING" && (
@@ -225,7 +220,6 @@ export default function AdminDashboard() {
                     </div>
                   )}
 
-                  {/* Anti-Cheat Alert Overlay */}
                   {isCheating && (
                     <div className="absolute top-2 right-2 bg-red-500 text-white text-[10px] font-bold px-2 py-1 rounded-md uppercase tracking-wider animate-pulse shadow-lg z-20">
                       {student.infractionCount} Flags
@@ -233,7 +227,6 @@ export default function AdminDashboard() {
                   )}
                 </div>
 
-                {/* Student Info Card */}
                 <div className="p-4 flex flex-col flex-1 bg-gradient-to-b from-transparent to-[#000818]/50 z-10">
                   <h3 className="text-sm font-bold text-white truncate" title={student.fullName}>
                     {student.fullName}

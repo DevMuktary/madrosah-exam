@@ -8,9 +8,10 @@ const prisma = new PrismaClient();
 export async function POST(request: Request) {
   try {
     const cookieStore = cookies();
-    const sessionId = cookieStore.get('student_session')?.value;
+    // This is now the session token, NOT the student ID
+    const sessionToken = cookieStore.get('student_session')?.value;
 
-    if (!sessionId) {
+    if (!sessionToken) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
@@ -20,16 +21,21 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Missing parameters' }, { status: 400 });
     }
 
-    // Ensure the student hasn't already submitted the exam
-    const student = await prisma.student.findUnique({ where: { id: sessionId } });
+    // 1. Fetch the student by their active session token to enforce multi-device lockout
+    const student = await prisma.student.findFirst({ 
+      where: { sessionToken: sessionToken } 
+    });
+
     if (!student || student.isExamTaken) {
-      return NextResponse.json({ error: 'Exam closed' }, { status: 403 });
+      return NextResponse.json({ error: 'Session expired or exam closed' }, { status: 403 });
     }
 
     // Upsert the answer: Update if it exists, Create if it is their first time clicking
     // We use findFirst + create/update to bypass complex Prisma compound key types
+    
+    // 2. Use the actual student.id from the database lookup, not the cookie
     const existingAnswer = await prisma.studentAnswer.findFirst({
-      where: { studentId: sessionId, questionId: questionId }
+      where: { studentId: student.id, questionId: questionId }
     });
 
     if (existingAnswer) {
@@ -40,7 +46,7 @@ export async function POST(request: Request) {
     } else {
       await prisma.studentAnswer.create({
         data: {
-          studentId: sessionId,
+          studentId: student.id, // Use student.id here as well
           questionId: questionId,
           selectedOption: selectedOption,
         },

@@ -115,7 +115,7 @@ export default function AdminDashboard() {
       const { Peer } = await import("peerjs");
       
       // Initialize PeerJS with your exact Metered TURN servers
-      peer = new Peer(undefined, {
+      peer = new Peer({
         config: {
           iceServers: [
             { urls: "stun:stun.relay.metered.ca:80" },

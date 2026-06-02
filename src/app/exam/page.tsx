@@ -123,10 +123,13 @@ export default function ExamPage() {
     } catch (err) {}
   }, []);
 
-  const showAlert = (title: string, message: string, type: "warning" | "confirm" = "warning", onConfirm?: () => void) => {
+  const showAlert = useCallback((title: string, message: string, type: "warning" | "confirm" = "warning", onConfirm?: () => void) => {
     setModal({ isOpen: true, title, message, type, onConfirm });
-  };
-  const closeModal = () => setModal({ ...modal, isOpen: false });
+  }, []);
+  
+  const closeModal = useCallback(() => {
+    setModal(prev => ({ ...prev, isOpen: false }));
+  }, []);
 
   useEffect(() => {
     if (loading || !isSecureEnvReady) return;
@@ -154,9 +157,25 @@ export default function ExamPage() {
       document.removeEventListener("contextmenu", handleContextMenu);
       window.removeEventListener("keydown", handleKeyDown);
     };
-  }, [loading, isSecureEnvReady, logInfraction]);
+  }, [loading, isSecureEnvReady, logInfraction, showAlert]);
 
-  // --- 4. TIMER & SUBMISSION ---
+  // --- 4. SUBMISSION LOGIC ---
+  const executeSubmission = useCallback(async () => {
+    setLoading(true);
+    closeModal();
+    if (streamRef.current) streamRef.current.getTracks().forEach(track => track.stop());
+    if (trackingIntervalRef.current) clearInterval(trackingIntervalRef.current);
+    
+    try {
+      const res = await fetch("/api/exam/submit", { method: "POST" });
+      if (res.ok) router.push("/");
+    } catch (err) {
+      showAlert("Network Error", "Failed to submit. Please check connection.", "warning");
+      setLoading(false);
+    }
+  }, [closeModal, router, showAlert]);
+
+  // --- 5. TIMER ---
   useEffect(() => {
     if (loading || !isSecureEnvReady || timeLeft <= 0) return;
     const timer = setInterval(() => {
@@ -170,30 +189,17 @@ export default function ExamPage() {
       });
     }, 1000);
     return () => clearInterval(timer);
-  }, [loading, isSecureEnvReady, timeLeft]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading, isSecureEnvReady, timeLeft]); // executeSubmission is deliberately excluded to prevent timer resets
 
-  const executeSubmission = async () => {
-    setLoading(true);
-    closeModal();
-    if (streamRef.current) streamRef.current.getTracks().forEach(track => track.stop());
-    if (trackingIntervalRef.current) clearInterval(trackingIntervalRef.current);
-    
-    try {
-      const res = await fetch("/api/exam/submit", { method: "POST" });
-      if (res.ok) router.push("/");
-    } catch (err) {
-      showAlert("Network Error", "Failed to submit. Please check connection.", "warning");
-      setLoading(false);
-    }
-  };
-
-  // --- 5. THE AI PROCTORING ENGINE ---
+  // --- 6. THE AI PROCTORING ENGINE ---
   const loadAIModel = async () => {
     try {
       const model = faceDetection.SupportedModels.MediaPipeFaceDetector;
-      const detectorConfig: faceDetection.MediaPipeFaceDetectorMediaPipeModelConfig = {
+      // FIX: Use the correct Tfjs config interface for the 'tfjs' runtime
+      const detectorConfig: faceDetection.MediaPipeFaceDetectorTfjsModelConfig = {
         runtime: 'tfjs',
-        maxFaces: 2, // We want to know if more than 1 person is looking at the screen
+        maxFaces: 2, 
       };
       detectorRef.current = await faceDetection.createDetector(model, detectorConfig);
       setAiStatus("ACTIVE");
@@ -212,11 +218,9 @@ export default function ExamPage() {
           const faces = await detectorRef.current.estimateFaces(videoRef.current);
           
           if (faces.length === 0) {
-            // No face detected
             logInfraction("FACE_NOT_DETECTED");
             showAlert("FACE NOT DETECTED", "The AI cannot see your face. Please look directly at the camera.", "warning");
           } else if (faces.length > 1) {
-            // Multiple faces detected
             logInfraction("MULTIPLE_FACES");
             showAlert("MULTIPLE FACES DETECTED", "Another person is in the frame. This is a severe violation.", "warning");
           }

@@ -180,7 +180,7 @@ export default function LoginPage() {
           <div className="inline-flex items-center justify-center w-16 h-16 rounded-full bg-[#ffb902]/10 border border-[#ffb902]/20 mb-6">
             {/* Elegant Book/Crescent Icon matching the theme */}
             <svg className="w-8 h-8 text-[#ffb902]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477-4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
             </svg>
           </div>
           <h1 className="text-2xl sm:text-3xl font-bold text-white tracking-tight">
@@ -223,26 +223,26 @@ export default function LoginPage() {
                 Registered Phone Number
               </label>
               
-              {/* Complex Input Group - Mobile Fit */}
-              <div className="relative flex flex-col sm:flex-row shadow-sm rounded-xl">
+              {/* Complex Input Group - Fixed to Always Be Side-by-Side */}
+              <div className="relative flex shadow-sm rounded-xl">
                 
                 {/* Custom Country Dropdown Trigger */}
-                <div className="relative w-full sm:w-auto" ref={dropdownRef}>
+                <div className="relative" ref={dropdownRef}>
                   <button
                     type="button"
                     onClick={() => setIsDropdownOpen(!isDropdownOpen)}
-                    className="w-full sm:w-[130px] h-[56px] flex items-center justify-between gap-2 px-4 bg-white/5 border border-white/10 text-white rounded-t-xl sm:rounded-tr-none sm:rounded-l-xl hover:bg-white/10 transition-colors focus:outline-none focus:ring-2 focus:ring-[#ffb902]/50 z-20"
+                    className="w-[110px] sm:w-[130px] h-[56px] flex items-center justify-between gap-1 px-3 sm:px-4 bg-white/5 border border-white/10 text-white rounded-l-xl hover:bg-white/10 transition-colors focus:outline-none focus:ring-2 focus:ring-[#ffb902]/50 z-20"
                   >
-                    <span className="text-2xl">{selectedCountry.flag}</span>
-                    <span className="text-sm font-semibold tracking-wide">{selectedCountry.code}</span>
-                    <svg className={`w-4 h-4 text-gray-400 transition-transform duration-300 ${isDropdownOpen ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <span className="text-xl sm:text-2xl">{selectedCountry.flag}</span>
+                    <span className="text-xs sm:text-sm font-semibold tracking-wide">{selectedCountry.code}</span>
+                    <svg className={`w-3 h-3 sm:w-4 h-4 text-gray-400 transition-transform duration-300 ${isDropdownOpen ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
                     </svg>
                   </button>
 
                   {/* Dropdown Menu with Search */}
                   {isDropdownOpen && (
-                    <div className="absolute top-[60px] left-0 w-full sm:w-[300px] bg-[#001232] border border-white/10 rounded-xl shadow-2xl z-50 overflow-hidden animate-in fade-in slide-in-from-top-2">
+                    <div className="absolute top-[60px] left-0 w-[280px] sm:w-[300px] bg-[#001232] border border-white/10 rounded-xl shadow-2xl z-50 overflow-hidden animate-in fade-in slide-in-from-top-2">
                       
                       {/* Search Bar for Mobile Accessibility */}
                       <div className="p-3 border-b border-white/10 bg-white/5">
@@ -288,7 +288,7 @@ export default function LoginPage() {
                   value={phoneNumber}
                   onChange={(e) => setPhoneNumber(e.target.value.replace(/[^\d\s]/g, ''))} // Allow numbers and spaces
                   placeholder="801 234 5678"
-                  className="flex-1 w-full h-[56px] px-5 bg-white/5 border border-t-0 sm:border-t sm:border-l-0 border-white/10 text-white text-lg rounded-b-xl sm:rounded-bl-none sm:rounded-r-xl focus:outline-none focus:ring-2 focus:ring-[#ffb902]/50 focus:bg-white/10 placeholder-gray-600 transition-all z-10"
+                  className="flex-1 w-full h-[56px] px-4 sm:px-5 bg-white/5 border border-l-0 border-white/10 text-white text-lg rounded-r-xl focus:outline-none focus:ring-2 focus:ring-[#ffb902]/50 focus:bg-white/10 placeholder-gray-600 transition-all z-10"
                   required
                 />
               </div>
@@ -325,7 +325,7 @@ export default function LoginPage() {
           Powered by
         </p>
         <p className="text-sm font-bold text-gray-400 mt-1">
-          Quadrox Technologies Limited
+          Quadrox Technologies
         </p>
       </div>
     </main>

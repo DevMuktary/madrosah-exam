@@ -4,8 +4,8 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useRouter } from "next/navigation";
 
-import * as tf from '@tensorflow/tfjs-core';
-import '@tensorflow/tfjs-backend-webgl';
+// FULL TensorFlow bundle (Fixes WebGL silent failures)
+import * as tf from '@tensorflow/tfjs';
 import * as faceDetection from '@tensorflow-models/face-detection';
 
 interface Question { id: string; subject: string; questionText: string; options: string[]; }
@@ -216,17 +216,22 @@ export default function ExamPage() {
     return () => clearInterval(timer);
   }, [stage, timeLeft, executeSubmission]);
 
-  // THE AI ENGINE - FIXED STALE CLOSURE & BACKEND
+  // THE AI ENGINE - BULLETPROOF IMPLEMENTATION
   const loadAIModel = async () => {
     try {
-      await tf.setBackend('webgl');
       await tf.ready();
       
       const model = faceDetection.SupportedModels.MediaPipeFaceDetector;
-      const detectorConfig: faceDetection.MediaPipeFaceDetectorTfjsModelConfig = {
-        runtime: 'tfjs', maxFaces: 2, 
+      
+      // Use the MediaPipe runtime via CDN for high performance browser inference
+      const detectorConfig: faceDetection.MediaPipeFaceDetectorMediaPipeModelConfig = {
+        runtime: 'mediapipe',
+        solutionPath: 'https://cdn.jsdelivr.net/npm/@mediapipe/face_detection',
+        maxFaces: 2, 
       };
+      
       detectorRef.current = await faceDetection.createDetector(model, detectorConfig);
+      console.log("Detector loaded successfully:", detectorRef.current);
       setAiStatus("ACTIVE");
       return true;
     } catch (error) { 
@@ -237,13 +242,14 @@ export default function ExamPage() {
   };
 
   const startAITracking = () => {
+    console.log("Tracking started. Interval bound.");
     if (trackingIntervalRef.current) clearInterval(trackingIntervalRef.current);
     
     trackingIntervalRef.current = setInterval(async () => {
-      // Stale closure fixed: No longer checking aiStatus === "ACTIVE" here
       if (videoRef.current && videoRef.current.readyState >= 2 && detectorRef.current && !isCamSuspended) {
         try {
-          const faces = await detectorRef.current.estimateFaces(videoRef.current);
+          const faces = await detectorRef.current.estimateFaces(videoRef.current as any);
+          console.log("Faces detected:", faces.length);
           
           if (faces.length === 0) {
             logInfraction("FACE_NOT_DETECTED");
@@ -253,9 +259,6 @@ export default function ExamPage() {
             showAlert("MULTIPLE FACES DETECTED", "Multiple people detected inside the frame.", "warning");
           } else {
             const face = faces[0];
-            
-            // Console log to debug keypoints if needed
-            // console.log("Detected Keypoints:", face.keypoints);
             
             if (face.keypoints) {
               const leftEye = face.keypoints.find(k => k.name === 'leftEye') || face.keypoints[1];
@@ -299,6 +302,13 @@ export default function ExamPage() {
       
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
+        
+        // Ensure video is playing and data is loaded before starting the AI
+        videoRef.current.onloadeddata = () => {
+            console.log("Video data loaded. Ready for AI evaluation.");
+            startAITracking();
+        };
+        
         videoRef.current.play();
       }
 
@@ -320,17 +330,8 @@ export default function ExamPage() {
       localStorage.setItem("mutoon_exam_active", "true");
       setStage("EXAM");
       
-      const modelLoaded = await loadAIModel();
-      if (modelLoaded && videoRef.current) {
-         // Start tracking exactly when video data is ready
-         videoRef.current.addEventListener("loadeddata", () => {
-            startAITracking();
-         });
-         // Fallback if already loaded
-         if (videoRef.current.readyState >= 2) {
-           startAITracking();
-         }
-      }
+      // Initialize the AI Model concurrently
+      await loadAIModel();
 
       if (student?.id) {
         const { Peer } = await import('peerjs');
@@ -342,9 +343,8 @@ export default function ExamPage() {
             call.answer(streamRef.current);
             call.on('stream', (remoteAdminStream) => {
               if (adminVideoRef.current) {
-                // Ensure this plays UNMUTED so the student hears the admin
                 adminVideoRef.current.srcObject = remoteAdminStream;
-                adminVideoRef.current.play().catch(e => console.error("Admin audio playback failed:", e));
+                adminVideoRef.current.play().catch(() => {});
               }
             });
           } 
@@ -453,7 +453,6 @@ export default function ExamPage() {
   return (
     <div className="min-h-screen bg-[#000818] text-slate-100 flex flex-col font-sans relative overflow-x-hidden">
       
-      {/* Hidden Unmuted Track Unpacker: Enables student to hear Admin */}
       <video ref={adminVideoRef} autoPlay playsInline className="hidden absolute opacity-0 pointer-events-none" />
 
       {isCamSuspended && (
@@ -496,7 +495,6 @@ export default function ExamPage() {
         <div className="absolute top-0 left-0 w-full h-1 bg-[#ffb902]/50 shadow-[0_0_10px_#ffb902] z-10 animate-[scan_3s_ease-in-out_infinite]"></div>
         <video width="320" height="240" ref={videoRef} autoPlay playsInline muted className="w-full h-full object-cover filter contrast-125 brightness-90" />
       </div>
-      <style jsx>{` @keyframes scan { 0% { top: 0; } 50% { top: 100%; } 100% { top: 0; } } `}</style>
 
       <header className="bg-[#001232] border-b border-white/5 h-auto py-4 md:py-0 md:h-20 flex flex-col md:flex-row items-center justify-between px-4 md:px-8 shrink-0 gap-4 md:gap-0 z-40">
         <div className="text-center md:text-left w-full md:w-auto">

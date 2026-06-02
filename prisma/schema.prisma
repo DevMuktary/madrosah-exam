@@ -23,6 +23,9 @@ model Student {
   examStartedAt   DateTime?       // To enforce strict server-side timing
   finalScore      Float?
   placementStatus String?
+  
+  sessionToken    String?         // <--- ADDED: To track active login and prevent multi-device cheating
+
   answers         StudentAnswer[]
   logs            ExamLog[]
   createdAt       DateTime        @default(now())

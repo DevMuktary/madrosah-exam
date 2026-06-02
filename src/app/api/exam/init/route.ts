@@ -22,19 +22,22 @@ export async function GET() {
   try {
     // 1. Verify Authentication Cookie
     const cookieStore = cookies();
-    const sessionId = cookieStore.get('student_session')?.value;
+    
+    // This value is now the unique sessionToken, not the student ID
+    const sessionToken = cookieStore.get('student_session')?.value;
 
-    if (!sessionId) {
+    if (!sessionToken) {
       return NextResponse.json({ error: 'Unauthorized access.' }, { status: 401 });
     }
 
-    // 2. Fetch Student Profile
-    const student = await prisma.student.findUnique({
-      where: { id: sessionId },
+    // 2. Fetch Student Profile using the session token to enforce multi-device lockout
+    const student = await prisma.student.findFirst({
+      where: { sessionToken: sessionToken },
     });
 
+    // If no student matches the token, it means they logged in on another device
     if (!student) {
-      return NextResponse.json({ error: 'Applicant not found.' }, { status: 404 });
+      return NextResponse.json({ error: 'Session expired or logged in from another device.' }, { status: 401 });
     }
 
     if (student.isExamTaken) {
@@ -48,7 +51,7 @@ export async function GET() {
     if (!startedAt) {
       startedAt = new Date();
       await prisma.student.update({
-        where: { id: sessionId },
+        where: { id: student.id }, // Use student.id for DB updates
         data: { examStartedAt: startedAt },
       });
     }
@@ -77,7 +80,7 @@ export async function GET() {
 
     // 5. Restore Saved Answers (in case they refreshed the page or lost internet)
     const savedAnswersRaw = await prisma.studentAnswer.findMany({
-      where: { studentId: sessionId },
+      where: { studentId: student.id }, // Make sure to use the actual student.id here
     });
 
     // Map into a flat dictionary: { "questionId": "selectedOption" }
@@ -90,7 +93,7 @@ export async function GET() {
     return NextResponse.json({
       success: true,
       student: {
-        id: student.id,
+        id: student.id, // Return the actual ID so the frontend can use it for WebRTC
         fullName: student.fullName,
         appliedClass: student.appliedClass,
       },

@@ -4,7 +4,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useRouter } from "next/navigation";
 
-// Explicitly load the core TensorFlow engine so it doesn't fail silently
 import * as tf from '@tensorflow/tfjs-core';
 import '@tensorflow/tfjs-backend-webgl';
 import * as faceDetection from '@tensorflow-models/face-detection';
@@ -13,9 +12,13 @@ interface Question { id: string; subject: string; questionText: string; options:
 interface StudentProfile { id: string; fullName: string; appliedClass: "IDAADIY" | "IBTIDAAIY"; }
 interface AlertModal { isOpen: boolean; title: string; message: string; type: "warning" | "confirm"; onConfirm?: () => void; }
 
+type ExamStage = "RULES" | "SETUP" | "EXAM" | "RESULT";
+
 export default function ExamPage() {
   const router = useRouter();
 
+  // Core Exam States
+  const [stage, setStage] = useState<ExamStage>("RULES");
   const [student, setStudent] = useState<StudentProfile | null>(null);
   const [subjects, setSubjects] = useState<string[]>([]);
   const [questions, setQuestions] = useState<Question[]>([]);
@@ -24,21 +27,28 @@ export default function ExamPage() {
   const [currentSubjectIndex, setCurrentSubjectIndex] = useState(0);
   const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
 
+  // Monitoring & Security States
   const [loading, setLoading] = useState(true);
-  const [isSecureEnvReady, setIsSecureEnvReady] = useState(false);
   const [mediaError, setMediaError] = useState("");
   const [timeLeft, setTimeLeft] = useState<number>(3600);
   const [infractions, setInfractions] = useState(0);
+  const [refreshCount, setRefreshCount] = useState(0);
+  const [isCamSuspended, setIsCamSuspended] = useState(false);
   const [modal, setModal] = useState<AlertModal>({ isOpen: false, title: "", message: "", type: "warning" });
-  
   const [aiStatus, setAiStatus] = useState<"LOADING" | "ACTIVE" | "ERROR">("LOADING");
   
+  // Results State
+  const [examResult, setExamResult] = useState<{ score: number; placement: string } | null>(null);
+  
+  // Refs
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const detectorRef = useRef<faceDetection.FaceDetector | null>(null);
   const trackingIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const peerInstance = useRef<any>(null);
+  const adminVideoRef = useRef<HTMLVideoElement>(null);
 
+  // 1. Initialize Exam Data & Monitor Page Refreshes
   useEffect(() => {
     async function initExam() {
       try {
@@ -51,8 +61,34 @@ export default function ExamPage() {
         setAnswers(data.savedAnswers || {});
         setSubjects(Array.from(new Set(data.questions.map((q: Question) => q.subject))) as string[]);
         if (data.timeLeft) setTimeLeft(data.timeLeft);
+
+        // Handle Refresh Tracking Safely via LocalStorage
+        const activeSession = localStorage.getItem("mutoon_exam_active");
+        let refreshes = parseInt(localStorage.getItem("mutoon_exam_refreshes") || "0", 10);
+
+        if (activeSession === "true") {
+          refreshes += 1;
+          localStorage.setItem("mutoon_exam_refreshes", refreshes.toString());
+          setRefreshCount(refreshes);
+
+          if (refreshes >= 3) {
+            setLoading(false);
+            handleAutoSubmitDueToRefresh();
+            return;
+          } else {
+            showAlert(
+              "REFRESH DETECTED", 
+              `You refreshed the page. Warning ${refreshes}/3. Reaching 3 refreshes submits your exam automatically.`, 
+              "warning"
+            );
+            setStage("SETUP"); // Force re-verify camera stream
+          }
+        }
+        
         setLoading(false);
-      } catch (err) { router.push("/"); }
+      } catch (err) { 
+        router.push("/"); 
+      }
     }
     initExam();
   }, [router]);
@@ -69,6 +105,7 @@ export default function ExamPage() {
   const activeQuestions = questions.filter((q) => q.subject === subjects[currentSubjectIndex]);
 
   const handleOptionSelect = (questionId: string, option: string) => {
+    if (isCamSuspended) return; // Freeze inputs if camera is blocked
     setAnswers((prev) => ({ ...prev, [questionId]: option }));
     saveAnswerToDatabase(questionId, option);
 
@@ -98,20 +135,21 @@ export default function ExamPage() {
   
   const closeModal = useCallback(() => setModal(prev => ({ ...prev, isOpen: false })), []);
 
+  // 2. Window Event Focus/Lockout Observers
   useEffect(() => {
-    if (loading || !isSecureEnvReady) return;
+    if (stage !== "EXAM" || isCamSuspended) return;
 
     const handleVisibilityChange = () => {
       if (document.visibilityState === "hidden") {
         logInfraction("TAB_SWITCH");
-        showAlert("SECURITY BREACH DETECTED", "You have switched tabs or minimized the browser.", "warning");
+        showAlert("SECURITY BREACH DETECTED", "You have switched tabs or minimized the browser windows.", "warning");
       }
     };
     const handleContextMenu = (e: MouseEvent) => e.preventDefault();
     const handleKeyDown = (e: KeyboardEvent) => {
       if ((e.ctrlKey && e.key === "c") || (e.ctrlKey && e.key === "v") || e.key === "F12") {
         e.preventDefault();
-        showAlert("ACTION BLOCKED", "Copy/Paste and developer tools are strictly disabled.", "warning");
+        showAlert("ACTION BLOCKED", "External copy pasting operations are disabled.", "warning");
       }
     };
 
@@ -124,26 +162,60 @@ export default function ExamPage() {
       document.removeEventListener("contextmenu", handleContextMenu);
       window.removeEventListener("keydown", handleKeyDown);
     };
-  }, [loading, isSecureEnvReady, logInfraction, showAlert]);
+  }, [stage, isCamSuspended, logInfraction, showAlert]);
 
-  const executeSubmission = useCallback(async () => {
-    setLoading(true);
-    closeModal();
+  // Clean-up Streams
+  const stopAllTracks = useCallback(() => {
     if (streamRef.current) streamRef.current.getTracks().forEach(track => track.stop());
     if (trackingIntervalRef.current) clearInterval(trackingIntervalRef.current);
     if (peerInstance.current) peerInstance.current.destroy();
+  }, []);
+
+  // 3. Normal Submission Handling
+  const executeSubmission = useCallback(async () => {
+    setLoading(true);
+    closeModal();
+    stopAllTracks();
+    localStorage.removeItem("mutoon_exam_active");
+    localStorage.removeItem("mutoon_exam_refreshes");
     
     try {
       const res = await fetch("/api/exam/submit", { method: "POST" });
-      if (res.ok) router.push("/");
+      if (res.ok) {
+        const data = await res.json();
+        setExamResult({ score: data.score, placement: data.placementClass });
+        setStage("RESULT");
+      } else {
+        router.push("/");
+      }
     } catch (err) {
-      showAlert("Network Error", "Failed to submit.", "warning");
+      router.push("/");
+    } finally {
       setLoading(false);
     }
-  }, [closeModal, router, showAlert]);
+  }, [closeModal, stopAllTracks, router]);
 
+  // 4. Force Submission for Violation handling
+  const handleAutoSubmitDueToRefresh = async () => {
+    stopAllTracks();
+    localStorage.removeItem("mutoon_exam_active");
+    localStorage.removeItem("mutoon_exam_refreshes");
+    try {
+      const res = await fetch("/api/exam/submit", { method: "POST" });
+      if (res.ok) {
+        const data = await res.json();
+        setExamResult({ score: data.score, placement: data.placementClass });
+        setStage("RESULT");
+        showAlert("EXAM TERMINATED", "Your exam was automatically submitted because you exceeded the maximum allowed page refreshes.", "warning");
+      }
+    } catch (e) {
+      router.push("/");
+    }
+  };
+
+  // 5. Global Exam Countdown
   useEffect(() => {
-    if (loading || !isSecureEnvReady || timeLeft <= 0) return;
+    if (stage !== "EXAM" || timeLeft <= 0) return;
     const timer = setInterval(() => {
       setTimeLeft((prev) => {
         if (prev <= 1) { clearInterval(timer); executeSubmission(); return 0; }
@@ -151,12 +223,12 @@ export default function ExamPage() {
       });
     }, 1000);
     return () => clearInterval(timer);
-  }, [loading, isSecureEnvReady, timeLeft, executeSubmission]);
+  }, [stage, timeLeft, executeSubmission]);
 
-  // THE AI ENGINE - FIXED FOR BROWSER INTEGRATION
+  // 6. AI Vision Core Engine
   const loadAIModel = async () => {
     try {
-      await tf.ready(); // Force TensorFlow backend to initialize
+      await tf.ready();
       const model = faceDetection.SupportedModels.MediaPipeFaceDetector;
       const detectorConfig: faceDetection.MediaPipeFaceDetectorTfjsModelConfig = {
         runtime: 'tfjs', maxFaces: 2, 
@@ -164,7 +236,6 @@ export default function ExamPage() {
       detectorRef.current = await faceDetection.createDetector(model, detectorConfig);
       setAiStatus("ACTIVE");
     } catch (error) { 
-      console.error(error);
       setAiStatus("ERROR"); 
     }
   };
@@ -173,17 +244,16 @@ export default function ExamPage() {
     if (trackingIntervalRef.current) clearInterval(trackingIntervalRef.current);
     
     trackingIntervalRef.current = setInterval(async () => {
-      // Ensure video is playing and AI is active
-      if (videoRef.current && videoRef.current.readyState >= 2 && detectorRef.current && aiStatus === "ACTIVE") {
+      if (videoRef.current && videoRef.current.readyState >= 2 && detectorRef.current && aiStatus === "ACTIVE" && !isCamSuspended) {
         try {
           const faces = await detectorRef.current.estimateFaces(videoRef.current);
           
           if (faces.length === 0) {
             logInfraction("FACE_NOT_DETECTED");
-            showAlert("FACE NOT DETECTED", "The AI cannot see your face. Please look directly at the camera.", "warning");
+            showAlert("FACE NOT DETECTED", "Please look directly into your camera frame.", "warning");
           } else if (faces.length > 1) {
             logInfraction("MULTIPLE_FACES");
-            showAlert("MULTIPLE FACES DETECTED", "Another person is in the frame. This is a severe violation.", "warning");
+            showAlert("MULTIPLE FACES DETECTED", "Multiple people detected inside the frame.", "warning");
           } else {
             const face = faces[0];
             if (face.keypoints) {
@@ -197,10 +267,9 @@ export default function ExamPage() {
                 
                 if (rightDist > 0 && leftDist > 0) {
                   const ratio = leftDist / rightDist;
-                  // If ratio leans heavily to one side, head is turned
                   if (ratio > 1.8 || ratio < 0.55) {
                     logInfraction("LOOKED_AWAY");
-                    showAlert("LOOKING AWAY DETECTED", "The AI detected your head is turned away from the screen.", "warning");
+                    showAlert("LOOKING AWAY DETECTED", "Ensure your head is focused toward the viewport.", "warning");
                   }
                 }
               }
@@ -211,13 +280,12 @@ export default function ExamPage() {
     }, 2000); 
   };
 
+  // 7. Media Setup & Active Hardware Failure Observation
   const initializeSecureEnvironment = async () => {
     setMediaError("");
     const element = document.documentElement;
     if (element.requestFullscreen) {
       try { await element.requestFullscreen(); } catch (err) {}
-    } else if ((element as any).webkitRequestFullscreen) {
-      try { await (element as any).webkitRequestFullscreen(); } catch (err) {}
     }
 
     try {
@@ -231,33 +299,56 @@ export default function ExamPage() {
         videoRef.current.srcObject = stream;
         videoRef.current.play();
       }
-      setIsSecureEnvReady(true);
+
+      // Check for live permission changes / dynamic unplugging
+      stream.getVideoTracks()[0].onended = () => {
+        setIsCamSuspended(true);
+        logInfraction("CAMERA_DISCONNECTED");
+      };
+
+      // Periodic sanity check loop for hardware tracks
+      const hardwareTrackCheck = setInterval(() => {
+        if (streamRef.current) {
+          const videoTrack = streamRef.current.getVideoTracks()[0];
+          if (!videoTrack || videoTrack.readyState === "ended" || !videoTrack.enabled) {
+            setIsCamSuspended(true);
+            clearInterval(hardwareTrackCheck);
+          }
+        }
+      }, 3000);
+
+      localStorage.setItem("mutoon_exam_active", "true");
+      setStage("EXAM");
       
-      // Start AI
       await loadAIModel();
-      // Add slight delay to let video metadata load before AI analyzes pixels
       setTimeout(() => startAITracking(), 1000); 
 
-      // Start WebRTC Transmitter
+      // WebRTC Link: Receiving Admin Video Containment (Fixes muted audio bug)
       if (student?.id) {
         const { Peer } = await import('peerjs');
         const peer = new Peer(`mutoon-${student.id}`);
         
         peer.on('open', () => { peerInstance.current = peer; });
-        peer.on('call', (call) => { if (streamRef.current) call.answer(streamRef.current); });
+        peer.on('call', (call) => { 
+          if (streamRef.current) {
+            call.answer(streamRef.current);
+            call.on('stream', (remoteAdminStream) => {
+              if (adminVideoRef.current) {
+                adminVideoRef.current.srcObject = remoteAdminStream;
+                adminVideoRef.current.play().catch(() => {});
+              }
+            });
+          } 
+        });
       }
     } catch (err) {
-      setMediaError("Camera and Microphone access are mandatory.");
+      setMediaError("Hardware access denied. Camera and Microphone stream configuration required.");
     }
   };
 
   useEffect(() => {
-    return () => {
-      if (trackingIntervalRef.current) clearInterval(trackingIntervalRef.current);
-      if (streamRef.current) streamRef.current.getTracks().forEach(track => track.stop());
-      if (peerInstance.current) peerInstance.current.destroy();
-    };
-  }, []);
+    return () => { stopAllTracks(); };
+  }, [stopAllTracks]);
 
   const formatTime = (seconds: number) => {
     const mins = Math.floor(seconds / 60);
@@ -269,19 +360,83 @@ export default function ExamPage() {
     return <div className="min-h-screen bg-[#001232] flex items-center justify-center"><div className="w-10 h-10 border-4 border-[#ffb902]/20 border-t-[#ffb902] rounded-full animate-spin"></div></div>;
   }
 
-  if (!isSecureEnvReady) {
+  // STAGE 0: RULES SCREEN
+  if (stage === "RULES") {
+    return (
+      <div className="min-h-screen bg-[#000818] text-slate-100 flex items-center justify-center p-4">
+        <div className="max-w-2xl w-full bg-[#001232] border border-white/10 p-8 rounded-3xl shadow-2xl relative">
+          <div className="text-center mb-6">
+            <h1 className="text-2xl font-black text-white tracking-tight uppercase">EXAMINATION RULES & INSTRUCTIONS</h1>
+            <p className="text-xs text-[#ffb902] font-bold tracking-widest mt-1">INSTITUTE OF MUTOON</p>
+          </div>
+          
+          <div className="space-y-4 text-sm text-gray-300 border-y border-white/5 py-6 my-6 leading-relaxed">
+            <div className="flex gap-3"><span className="text-[#ffb902] font-bold">1.</span><p>Do not switch tabs, minimize your browser, or open any inspect elements. These actions are instantly logged as security violations.</p></div>
+            <div className="flex gap-3"><span className="text-[#ffb902] font-bold">2.</span><p>Ensure your face remains centered in the camera preview frame at all times. The AI tracker monitors your eye presence continuously.</p></div>
+            <div className="flex gap-3"><span className="text-[#ffb902] font-bold">3.</span><p>Do not refresh the examination environment. If you reload your window <strong>3 times</strong>, your test automatically forces submission.</p></div>
+            <div className="flex gap-3"><span className="text-[#ffb902] font-bold">4.</span><p>The system records and transmits live audio. Ensure you are taking this assessment in a quiet room with clear lighting profiles.</p></div>
+          </div>
+
+          <button onClick={() => setStage("SETUP")} className="w-full py-4 bg-[#ffb902] text-[#001232] font-bold rounded-xl active:scale-95 transition-all">
+            I Have Read & Accept Rules
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // STAGE 1: HARDWARE ACCESS INITIALIZATION
+  if (stage === "SETUP") {
     return (
       <div className="min-h-screen bg-[#001232] flex flex-col items-center justify-center p-6 text-center">
         <div className="max-w-md w-full bg-[#000818] border border-white/10 p-8 rounded-3xl shadow-2xl">
           <div className="w-16 h-16 bg-[#ffb902]/10 rounded-full flex items-center justify-center mx-auto mb-6 border border-[#ffb902]/20">
             <svg className="w-8 h-8 text-[#ffb902]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 10l4.553-2.276A11.955 11.955 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
             </svg>
           </div>
-          <h2 className="text-2xl font-bold text-white mb-4">Proctoring Setup</h2>
-          <p className="text-gray-400 text-sm mb-6 leading-relaxed">Live video, audio monitoring, and full-screen lockdown are required. Your feed is securely transmitted and AI-monitored.</p>
+          <h2 className="text-2xl font-bold text-white mb-4">Proctoring Verification</h2>
+          <p className="text-gray-400 text-sm mb-6 leading-relaxed">Live video stream authentication required to connect with the evaluation core infrastructure.</p>
           {mediaError && <div className="mb-6 p-4 bg-red-500/10 border border-red-500/20 rounded-xl"><p className="text-sm font-medium text-red-400">{mediaError}</p></div>}
-          <button onClick={initializeSecureEnvironment} className="w-full py-4 bg-[#ffb902] text-[#001232] font-bold text-lg rounded-xl shadow-[0_0_20px_rgba(255,185,2,0.2)] active:scale-95 transition-all">Allow Access & Begin</button>
+          <button onClick={initializeSecureEnvironment} className="w-full py-4 bg-[#ffb902] text-[#001232] font-bold text-lg rounded-xl shadow-[0_0_20px_rgba(255,185,2,0.2)] active:scale-95 transition-all">Verify & Sync Camera</button>
+        </div>
+      </div>
+    );
+  }
+
+  // STAGE 3: TEST SUMMARY & FINAL SCORES
+  if (stage === "RESULT" && examResult) {
+    return (
+      <div className="min-h-screen bg-[#000818] text-slate-100 flex items-center justify-center p-6">
+        <div className="max-w-md w-full bg-[#001232] border-2 border-[#ffb902]/30 p-8 rounded-3xl shadow-[0_0_40px_rgba(255,185,2,0.1)] text-center">
+          <div className="w-20 h-20 bg-emerald-500/10 rounded-full flex items-center justify-center mx-auto mb-6 border border-emerald-500/20">
+            <svg className="w-10 h-10 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
+            </svg>
+          </div>
+          <h1 className="text-2xl font-black text-white uppercase tracking-tight">Assessment Submitted</h1>
+          <p className="text-xs text-gray-400 font-medium mt-1">Your answers have been graded and logged into the records system.</p>
+
+          <div className="my-8 p-6 bg-[#000818] rounded-2xl border border-white/5 space-y-4">
+            <div>
+              <span className="text-[10px] uppercase font-bold text-gray-500 tracking-widest block">Final Attained Score</span>
+              <span className="text-4xl font-black text-[#ffb902] font-mono">{examResult.score}%</span>
+            </div>
+            <div className="pt-4 border-t border-white/5">
+              <span className="text-[10px] uppercase font-bold text-gray-500 tracking-widest block">Assigned Placement Tier</span>
+              <span className="text-xl font-bold text-white block mt-1 tracking-wide">{examResult.placement}</span>
+            </div>
+          </div>
+
+          <div className="p-4 bg-blue-500/10 border border-blue-500/20 rounded-xl mb-6">
+            <p className="text-xs text-blue-400 font-semibold leading-relaxed">
+              ⚠️ CRITICAL ACTION REQUIRED:<br />Take a complete screenshot of this window interface right now and forward it directly to your administrative coordinator.
+            </p>
+          </div>
+
+          <button onClick={() => router.push("/")} className="w-full py-3 bg-white/5 hover:bg-white/10 text-white font-bold text-sm rounded-xl transition-all">
+            Return to Homepage
+          </button>
         </div>
       </div>
     );
@@ -289,9 +444,29 @@ export default function ExamPage() {
 
   const activeQuestion = activeQuestions[currentQuestionIndex];
 
+  // STAGE 2: LIVE RUNNING EXAM WINDOW
   return (
     <div className="min-h-screen bg-[#000818] text-slate-100 flex flex-col font-sans relative overflow-x-hidden">
       
+      {/* Hidden Track Unpacker Element: Fixes the Admin incoming Audio Track mute bug */}
+      <video ref={adminVideoRef} autoPlay playsInline className="hidden absolute opacity-0 pointer-events-none" />
+
+      {/* SUSPENDED/MUTED DEVICE HARDWARE OVERLAY BLOCK */}
+      {isCamSuspended && (
+        <div className="fixed inset-0 z-[200] bg-[#000818]/95 flex items-center justify-center p-6 backdrop-blur-md animate-in fade-in duration-300">
+          <div className="max-w-sm w-full bg-[#001232] border border-red-500 p-8 rounded-3xl text-center shadow-2xl">
+            <div className="w-16 h-16 bg-red-500/10 rounded-full flex items-center justify-center mx-auto mb-4 border border-red-500/20">
+              <svg className="w-8 h-8 text-red-500 animate-pulse" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636" />
+              </svg>
+            </div>
+            <h3 className="text-lg font-bold text-red-500 uppercase tracking-tight">Exam Suspended</h3>
+            <p className="text-gray-300 text-xs my-4 leading-relaxed">Your video stream track was disabled or disconnected. Re-enable device hardware or check tracking connectivity to proceed. Time is still ticking.</p>
+            <button onClick={() => { setIsCamSuspended(false); initializeSecureEnvironment(); }} className="w-full py-3 bg-red-500 text-white font-bold text-xs rounded-xl uppercase tracking-wider">Re-Authorize Hardware</button>
+          </div>
+        </div>
+      )}
+
       {modal.isOpen && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
           <div className="bg-[#001232] border border-white/10 w-full max-w-sm rounded-3xl p-6 shadow-2xl animate-in fade-in zoom-in-95 duration-200">
@@ -307,6 +482,7 @@ export default function ExamPage() {
         </div>
       )}
 
+      {/* FLOATING PROCTOR VIDEO BOX CONTAINER */}
       <div className="fixed bottom-4 right-4 md:bottom-8 md:right-8 w-32 h-40 md:w-48 md:h-56 bg-[#001232] border-2 border-[#ffb902]/50 rounded-2xl overflow-hidden shadow-2xl z-50">
         <div className="absolute top-0 w-full bg-black/60 px-2 py-1 flex justify-between items-center z-10 backdrop-blur-md">
           <div className="flex items-center gap-1.5"><span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse"></span><span className="text-[9px] text-white font-bold tracking-widest uppercase">REC</span></div>
@@ -315,7 +491,6 @@ export default function ExamPage() {
           </span>
         </div>
         <div className="absolute top-0 left-0 w-full h-1 bg-[#ffb902]/50 shadow-[0_0_10px_#ffb902] z-10 animate-[scan_3s_ease-in-out_infinite]"></div>
-        {/* WE INJECTED WIDTH AND HEIGHT SO TENSORFLOW CAN BIND TO IT */}
         <video width="320" height="240" ref={videoRef} autoPlay playsInline muted className="w-full h-full object-cover filter contrast-125 brightness-90" />
       </div>
       <style jsx>{` @keyframes scan { 0% { top: 0; } 50% { top: 100%; } 100% { top: 0; } } `}</style>
@@ -330,7 +505,7 @@ export default function ExamPage() {
             <span className="text-[10px] md:text-xs uppercase font-bold text-gray-500">Time</span>
             <span className={`font-mono text-lg md:text-xl font-black ${timeLeft < 300 ? "text-red-500 animate-pulse" : "text-[#ffb902]"}`}>{formatTime(timeLeft)}</span>
           </div>
-          <button onClick={() => showAlert("Submit Examination?", "Are you sure you want to submit your answers?", "confirm", executeSubmission)} className="h-10 md:h-12 px-6 bg-[#ffb902] text-[#001232] font-bold text-xs md:text-sm uppercase tracking-wider rounded-xl hover:bg-[#ffc833]">Submit</button>
+          <button onClick={() => showAlert("Submit Examination?", "Are you sure you want to finalise and grade answers?", "confirm", executeSubmission)} className="h-10 md:h-12 px-6 bg-[#ffb902] text-[#001232] font-bold text-xs md:text-sm uppercase tracking-wider rounded-xl hover:bg-[#ffc833]">Submit</button>
         </div>
       </header>
 
@@ -361,7 +536,7 @@ export default function ExamPage() {
                     const isSelected = answers[activeQuestion.id] === option;
                     const labelPrefix = ["أ", "ب", "ت", "ث"][oIndex] || `${oIndex + 1}`;
                     return (
-                      <button key={oIndex} onClick={() => handleOptionSelect(activeQuestion.id, option)} className={`w-full min-h-[70px] px-5 py-4 rounded-2xl border-2 text-right flex items-center gap-4 group ${isSelected ? "bg-[#ffb902]/10 border-[#ffb902] text-[#ffb902]" : "bg-[#000818] border-transparent text-gray-300 hover:border-white/10"}`}>
+                      <button key={oIndex} onClick={() => handleOptionSelect(activeQuestion.id, option)} disabled={isCamSuspended} className={`w-full min-h-[70px] px-5 py-4 rounded-2xl border-2 text-right flex items-center gap-4 group ${isSelected ? "bg-[#ffb902]/10 border-[#ffb902] text-[#ffb902]" : "bg-[#000818] border-transparent text-gray-300 hover:border-white/10"}`}>
                          <span className={`w-10 h-10 rounded-xl flex items-center justify-center text-lg font-bold shrink-0 ${isSelected ? "bg-[#ffb902] text-[#001232]" : "bg-white/5 text-gray-500 group-hover:text-white"}`}>{labelPrefix}</span>
                          <span className={`text-lg md:text-xl flex-1 ${isSelected ? "font-bold" : "font-medium"}`}>{option}</span>
                       </button>

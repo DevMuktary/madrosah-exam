@@ -104,15 +104,12 @@ export default function AdminDashboard() {
     // Calling Engine now strictly waits for isMicReady
     if (!isPeerReady || !isMicReady || !peerInstance.current || students.length === 0) return;
 
-    const canvas = document.createElement("canvas");
-    canvas.width = 320;
-    canvas.height = 240;
-    const ctx = canvas.getContext("2d");
-    if (ctx) { ctx.fillStyle = "black"; ctx.fillRect(0, 0, 320, 240); }
-    const outStream = canvas.captureStream(15); 
-    
+    // FIXED WEBRTC SYNC: Do not use a dummy Canvas. Call using only the raw audio track.
+    let outStream: MediaStream;
     if (adminAudioTrackRef.current) {
-      outStream.addTrack(adminAudioTrackRef.current);
+        outStream = new MediaStream([adminAudioTrackRef.current]);
+    } else {
+        return; // No microphone detected, stop execution.
     }
 
     students.forEach((student) => {
@@ -177,7 +174,7 @@ export default function AdminDashboard() {
                 : "bg-[#000818] text-gray-400 border-white/10 hover:bg-white/5 hover:text-white"
             }`}
           >
-            {adminMicActive ? "🔴 Broadcasting to All" : "🎙️ Mic Off"}
+            {adminMicActive ? "🎙️ Broadcasting to All" : "🎤 Mic Off"}
           </button>
 
           <div className="h-8 w-px bg-white/10 mx-2"></div>

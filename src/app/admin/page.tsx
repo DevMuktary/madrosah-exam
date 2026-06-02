@@ -11,10 +11,9 @@ interface StudentMonitor {
   infractionCount: number; recentLogs: ExamLog[];
 }
 
-// Upgraded StreamPlayer with Individual Mute/Unmute Controls
 const StreamPlayer = ({ stream }: { stream: MediaStream }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
-  const [isMuted, setIsMuted] = useState(true); // Muted by default to prevent echo
+  const [isMuted, setIsMuted] = useState(true);
   
   useEffect(() => {
     if (videoRef.current && stream) {
@@ -34,10 +33,9 @@ const StreamPlayer = ({ stream }: { stream: MediaStream }) => {
         muted={isMuted} 
         className="w-full h-full object-cover filter contrast-125 brightness-90" 
       />
-      {/* Admin Listen-In Button (Appears on Hover) */}
       <button 
         onClick={(e) => { e.stopPropagation(); setIsMuted(!isMuted); }}
-        className={`absolute bottom-2 right-2 p-2 rounded-lg text-xs font-bold uppercase tracking-widest transition-all opacity-0 group-hover:opacity-100 shadow-xl ${
+        className={`absolute bottom-2 right-2 p-2 rounded-lg text-xs font-bold uppercase tracking-widest transition-all opacity-0 group-hover:opacity-100 shadow-xl z-20 ${
           isMuted ? "bg-black/60 text-white hover:bg-black/80" : "bg-red-500 text-white animate-pulse"
         }`}
       >
@@ -51,8 +49,8 @@ export default function AdminDashboard() {
   const [students, setStudents] = useState<StudentMonitor[]>([]);
   const [loading, setLoading] = useState(true);
   
-  // WebRTC & Audio States
   const [isPeerReady, setIsPeerReady] = useState(false);
+  const [isMicReady, setIsMicReady] = useState(false);
   const [streams, setStreams] = useState<Record<string, MediaStream>>({});
   const [adminMicActive, setAdminMicActive] = useState(false);
   
@@ -60,16 +58,18 @@ export default function AdminDashboard() {
   const activeCalls = useRef<Set<string>>(new Set());
   const adminAudioTrackRef = useRef<MediaStreamTrack | null>(null);
 
-  // 1. Fetch Admin Microphone on Load
   useEffect(() => {
     navigator.mediaDevices.getUserMedia({ audio: true }).then((stream) => {
       const track = stream.getAudioTracks()[0];
-      track.enabled = false; // Start muted
+      track.enabled = false; 
       adminAudioTrackRef.current = track;
-    }).catch(err => console.warn("Admin mic access denied:", err));
+      setIsMicReady(true);
+    }).catch(err => {
+      console.warn("Admin mic access denied:", err);
+      setIsMicReady(true); 
+    });
   }, []);
 
-  // 2. Database Polling
   useEffect(() => {
     const fetchDashboardData = async () => {
       try {
@@ -86,7 +86,6 @@ export default function AdminDashboard() {
     return () => clearInterval(interval);
   }, []);
 
-  // 3. Initialize PeerJS
   useEffect(() => {
     let peer: any;
     const initPeer = async () => {
@@ -101,9 +100,9 @@ export default function AdminDashboard() {
     return () => { if (peer) peer.destroy(); };
   }, []);
 
-  // 4. Calling Engine (Now with Admin Audio Attached)
   useEffect(() => {
-    if (!isPeerReady || !peerInstance.current || students.length === 0) return;
+    // Calling Engine now strictly waits for isMicReady
+    if (!isPeerReady || !isMicReady || !peerInstance.current || students.length === 0) return;
 
     const canvas = document.createElement("canvas");
     canvas.width = 320;
@@ -112,7 +111,6 @@ export default function AdminDashboard() {
     if (ctx) { ctx.fillStyle = "black"; ctx.fillRect(0, 0, 320, 240); }
     const outStream = canvas.captureStream(15); 
     
-    // Attach Admin mic to the outgoing stream (even if currently muted)
     if (adminAudioTrackRef.current) {
       outStream.addTrack(adminAudioTrackRef.current);
     }
@@ -135,9 +133,8 @@ export default function AdminDashboard() {
         }
       }
     });
-  }, [students, isPeerReady]);
+  }, [students, isPeerReady, isMicReady]);
 
-  // Toggle Admin Mic Broadcast
   const toggleAdminBroadcast = () => {
     if (adminAudioTrackRef.current) {
       adminAudioTrackRef.current.enabled = !adminAudioTrackRef.current.enabled;
@@ -172,8 +169,6 @@ export default function AdminDashboard() {
         </div>
 
         <div className="hidden md:flex items-center gap-6">
-          
-          {/* THE NEW BROADCAST BUTTON */}
           <button
             onClick={toggleAdminBroadcast}
             className={`h-11 px-6 rounded-xl font-bold text-xs uppercase tracking-wider transition-all flex items-center gap-2 border shadow-lg ${

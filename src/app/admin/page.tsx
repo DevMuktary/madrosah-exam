@@ -3,31 +3,24 @@
 
 import { useState, useEffect, useRef } from "react";
 
-interface ExamLog {
-  id: string;
-  eventType: string;
-  timestamp: string;
-}
-
+interface ExamLog { id: string; eventType: string; timestamp: string; }
 interface StudentMonitor {
-  id: string;
-  fullName: string;
-  phone: string;
-  appliedClass: string;
-  status: "PENDING" | "ACTIVE" | "COMPLETED";
-  progress: number;
-  finalScore: number | null;
-  placementStatus: string | null;
-  infractionCount: number;
-  recentLogs: ExamLog[];
+  id: string; fullName: string; phone: string; appliedClass: string;
+  status: "PENDING" | "ACTIVE" | "COMPLETED"; progress: number;
+  finalScore: number | null; placementStatus: string | null;
+  infractionCount: number; recentLogs: ExamLog[];
 }
 
+// Fixed StreamPlayer to force playback when WebRTC bytes arrive
 const StreamPlayer = ({ stream }: { stream: MediaStream }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   
   useEffect(() => {
     if (videoRef.current && stream) {
       videoRef.current.srcObject = stream;
+      videoRef.current.onloadedmetadata = () => {
+        videoRef.current?.play().catch(e => console.error("Autoplay blocked:", e));
+      };
     }
   }, [stream]);
 
@@ -46,13 +39,11 @@ export default function AdminDashboard() {
   const [students, setStudents] = useState<StudentMonitor[]>([]);
   const [loading, setLoading] = useState(true);
   
-  // WebRTC States
   const [isPeerReady, setIsPeerReady] = useState(false);
   const [streams, setStreams] = useState<Record<string, MediaStream>>({});
   const peerInstance = useRef<any>(null);
   const activeCalls = useRef<Set<string>>(new Set());
 
-  // 1. Database Polling
   useEffect(() => {
     const fetchDashboardData = async () => {
       try {
@@ -61,9 +52,7 @@ export default function AdminDashboard() {
           const data = await res.json();
           setStudents(data.students);
         }
-      } catch (err) {} finally {
-        setLoading(false);
-      }
+      } catch (err) {} finally { setLoading(false); }
     };
 
     fetchDashboardData();
@@ -71,14 +60,11 @@ export default function AdminDashboard() {
     return () => clearInterval(interval);
   }, []);
 
-  // 2. Initialize PeerJS properly (Wait for Open event)
   useEffect(() => {
     let peer: any;
     const initPeer = async () => {
       const { Peer } = await import("peerjs");
-      // Admin generates a random caller ID so we don't have clashing instances
       peer = new Peer(); 
-      
       peer.on("open", () => {
         peerInstance.current = peer;
         setIsPeerReady(true);
@@ -86,20 +72,22 @@ export default function AdminDashboard() {
     };
     initPeer();
 
-    return () => {
-      if (peer) peer.destroy();
-    };
+    return () => { if (peer) peer.destroy(); };
   }, []);
 
-  // 3. Robust Calling Engine
   useEffect(() => {
     if (!isPeerReady || !peerInstance.current || students.length === 0) return;
 
-    // Bulletproof dummy stream: AudioContext (fixes Safari issues)
-    const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
-    const ctx = new AudioContextClass();
-    const dest = ctx.createMediaStreamDestination();
-    const dummyStream = dest.stream;
+    // THE FIX: A completely silent, browser-safe dummy canvas stream
+    const canvas = document.createElement("canvas");
+    canvas.width = 320;
+    canvas.height = 240;
+    const ctx = canvas.getContext("2d");
+    if (ctx) {
+      ctx.fillStyle = "black";
+      ctx.fillRect(0, 0, 320, 240);
+    }
+    const dummyStream = canvas.captureStream(15); 
 
     students.forEach((student) => {
       if (student.status === "ACTIVE" && !activeCalls.current.has(student.id)) {
@@ -113,11 +101,7 @@ export default function AdminDashboard() {
           });
 
           call.on("close", () => {
-            setStreams((prev) => {
-              const newStreams = { ...prev };
-              delete newStreams[student.id];
-              return newStreams;
-            });
+            setStreams((prev) => { const newStreams = { ...prev }; delete newStreams[student.id]; return newStreams; });
             activeCalls.current.delete(student.id);
           });
           
@@ -134,11 +118,7 @@ export default function AdminDashboard() {
   const criticalAlerts = students.filter(s => s.infractionCount > 0).length;
 
   if (loading) {
-    return (
-      <div className="min-h-screen bg-[#001232] flex items-center justify-center">
-        <div className="w-10 h-10 border-4 border-[#ffb902]/20 border-t-[#ffb902] rounded-full animate-spin"></div>
-      </div>
-    );
+    return <div className="min-h-screen bg-[#001232] flex items-center justify-center"><div className="w-10 h-10 border-4 border-[#ffb902]/20 border-t-[#ffb902] rounded-full animate-spin"></div></div>;
   }
 
   return (

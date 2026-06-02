@@ -3,6 +3,9 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useRouter } from "next/navigation";
+
+// Explicitly load the core TensorFlow engine so it doesn't fail silently
+import * as tf from '@tensorflow/tfjs-core';
 import '@tensorflow/tfjs-backend-webgl';
 import * as faceDetection from '@tensorflow-models/face-detection';
 
@@ -150,22 +153,28 @@ export default function ExamPage() {
     return () => clearInterval(timer);
   }, [loading, isSecureEnvReady, timeLeft, executeSubmission]);
 
+  // THE AI ENGINE - FIXED FOR BROWSER INTEGRATION
   const loadAIModel = async () => {
     try {
+      await tf.ready(); // Force TensorFlow backend to initialize
       const model = faceDetection.SupportedModels.MediaPipeFaceDetector;
       const detectorConfig: faceDetection.MediaPipeFaceDetectorTfjsModelConfig = {
         runtime: 'tfjs', maxFaces: 2, 
       };
       detectorRef.current = await faceDetection.createDetector(model, detectorConfig);
       setAiStatus("ACTIVE");
-    } catch (error) { setAiStatus("ERROR"); }
+    } catch (error) { 
+      console.error(error);
+      setAiStatus("ERROR"); 
+    }
   };
 
   const startAITracking = () => {
     if (trackingIntervalRef.current) clearInterval(trackingIntervalRef.current);
     
     trackingIntervalRef.current = setInterval(async () => {
-      if (videoRef.current && detectorRef.current && aiStatus === "ACTIVE") {
+      // Ensure video is playing and AI is active
+      if (videoRef.current && videoRef.current.readyState >= 2 && detectorRef.current && aiStatus === "ACTIVE") {
         try {
           const faces = await detectorRef.current.estimateFaces(videoRef.current);
           
@@ -176,7 +185,6 @@ export default function ExamPage() {
             logInfraction("MULTIPLE_FACES");
             showAlert("MULTIPLE FACES DETECTED", "Another person is in the frame. This is a severe violation.", "warning");
           } else {
-            // TIGHTENED MATH: Calculate Nose to Eye distances
             const face = faces[0];
             if (face.keypoints) {
               const leftEye = face.keypoints.find(k => k.name === 'leftEye');
@@ -189,7 +197,7 @@ export default function ExamPage() {
                 
                 if (rightDist > 0 && leftDist > 0) {
                   const ratio = leftDist / rightDist;
-                  // Made highly sensitive: If ratio leans heavily to one side, head is turned
+                  // If ratio leans heavily to one side, head is turned
                   if (ratio > 1.8 || ratio < 0.55) {
                     logInfraction("LOOKED_AWAY");
                     showAlert("LOOKING AWAY DETECTED", "The AI detected your head is turned away from the screen.", "warning");
@@ -200,7 +208,7 @@ export default function ExamPage() {
           }
         } catch (error) {}
       }
-    }, 2000); // Check faster (every 2 seconds)
+    }, 2000); 
   };
 
   const initializeSecureEnvironment = async () => {
@@ -225,25 +233,18 @@ export default function ExamPage() {
       }
       setIsSecureEnvReady(true);
       
-      // 1. Start AI Tracking
+      // Start AI
       await loadAIModel();
-      startAITracking();
+      // Add slight delay to let video metadata load before AI analyzes pixels
+      setTimeout(() => startAITracking(), 1000); 
 
-      // 2. Open WebRTC Line securely
+      // Start WebRTC Transmitter
       if (student?.id) {
         const { Peer } = await import('peerjs');
         const peer = new Peer(`mutoon-${student.id}`);
         
-        peer.on('open', () => {
-          peerInstance.current = peer;
-        });
-
-        // Answer when Admin calls
-        peer.on('call', (call) => {
-          if (streamRef.current) {
-            call.answer(streamRef.current);
-          }
-        });
+        peer.on('open', () => { peerInstance.current = peer; });
+        peer.on('call', (call) => { if (streamRef.current) call.answer(streamRef.current); });
       }
     } catch (err) {
       setMediaError("Camera and Microphone access are mandatory.");
@@ -314,7 +315,8 @@ export default function ExamPage() {
           </span>
         </div>
         <div className="absolute top-0 left-0 w-full h-1 bg-[#ffb902]/50 shadow-[0_0_10px_#ffb902] z-10 animate-[scan_3s_ease-in-out_infinite]"></div>
-        <video ref={videoRef} autoPlay playsInline muted className="w-full h-full object-cover filter contrast-125 brightness-90" />
+        {/* WE INJECTED WIDTH AND HEIGHT SO TENSORFLOW CAN BIND TO IT */}
+        <video width="320" height="240" ref={videoRef} autoPlay playsInline muted className="w-full h-full object-cover filter contrast-125 brightness-90" />
       </div>
       <style jsx>{` @keyframes scan { 0% { top: 0; } 50% { top: 100%; } 100% { top: 0; } } `}</style>
 

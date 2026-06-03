@@ -115,20 +115,6 @@ export async function GET() {
       {
         classLevel: ClassLevel.IBTIDAAIY,
         subject: "الحديث",
-        questionText: "ماذا نهى النبي ﷺ في الحديث الثالث؟",
-        options: ["الكذب", "الغيبة", "سوء الظن", "النميمة"],
-        correctAnswer: "سوء الظن",
-      },
-      {
-        classLevel: ClassLevel.IBTIDAAIY,
-        subject: "الحديث",
-        questionText: "إلى أين قد تهوي الكلمة التي لا يتبينها العبد؟",
-        options: ["إلى الجنة", "في النار", "إلى المسجد", "إلى السماء"],
-        correctAnswer: "في النار",
-      },
-      {
-        classLevel: ClassLevel.IBTIDAAIY,
-        subject: "الحديث",
         questionText: "من قام رمضان إيمانًا واحتسابًا ماذا ينال؟",
         options: ["المال", "المغفرة", "الشهرة", "الراحة"],
         correctAnswer: "المغفرة",
@@ -153,13 +139,6 @@ export async function GET() {
         questionText: "كم عدد حقوق المسلم على المسلم المذكورة في الحديث؟",
         options: ["ثلاثة", "خمسة", "سبعة", "ستة"],
         correctAnswer: "خمسة",
-      },
-      {
-        classLevel: ClassLevel.IBTIDAAIY,
-        subject: "الحديث",
-        questionText: "ماذا كان يفعل النبي ﷺ إذا اشتهى الطعام؟",
-        options: ["يرميه", "يأكله", "يبيعه", "يتركه"],
-        correctAnswer: "يأكله",
       },
 
       // ==========================================

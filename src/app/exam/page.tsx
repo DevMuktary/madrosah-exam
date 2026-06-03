@@ -218,6 +218,12 @@ export default function ExamPage() {
   }, [stage, timeLeft, executeSubmission]);
 
   const initializeSecureEnvironment = async () => {
+    // AUDIO AUTOPLAY UNLOCK: Force browsers to un-suspend the media engine
+    if (adminVideoRef.current) {
+      adminVideoRef.current.play().catch(() => {});
+      adminVideoRef.current.pause();
+    }
+
     setMediaError("");
     const element = document.documentElement;
     if (element.requestFullscreen) {
@@ -256,6 +262,13 @@ export default function ExamPage() {
 
       // Connect to the Admin Room via PeerJS
       if (student?.id) {
+        // Destroy any existing ghost connections before reconnecting
+        if (peerInstance.current) {
+          peerInstance.current.disconnect();
+          peerInstance.current.destroy();
+          peerInstance.current = null;
+        }
+
         const { Peer } = await import('peerjs');
         
         // Initialize PeerJS with your exact Metered TURN servers
@@ -287,10 +300,17 @@ export default function ExamPage() {
           },
         });
         
+        // Auto-retry if the ID is temporarily locked by the server
+        peer.on('error', (err: any) => {
+          if (err.type === 'unavailable-id') {
+             console.warn("Peer ID locked by ghost connection. Retrying in 3 seconds...");
+             setTimeout(() => { initializeSecureEnvironment(); }, 3000);
+          }
+        });
+
         peer.on('open', () => { peerInstance.current = peer; });
         peer.on('call', (call) => { 
           if (streamRef.current) {
-            // Answer the call with the student's camera and mic stream
             call.answer(streamRef.current);
             call.on('stream', (remoteAdminStream) => {
               if (adminVideoRef.current) {

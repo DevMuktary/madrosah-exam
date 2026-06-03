@@ -115,7 +115,7 @@ export default function AdminDashboard() {
       const { Peer } = await import("peerjs");
       
       // Initialize PeerJS with your exact Metered TURN servers
-      peer = new Peer({
+      peer = new Peer(undefined, {
         config: {
           iceServers: [
             { urls: "stun:stun.relay.metered.ca:80" },
@@ -166,11 +166,26 @@ export default function AdminDashboard() {
           call.on("stream", (remoteStream: MediaStream) => {
             setStreams((prev) => ({ ...prev, [student.id]: remoteStream }));
           });
+
+          // GHOST CONNECTION KILLER: Monitors the exact network state
+          if (call.peerConnection) {
+            call.peerConnection.addEventListener("iceconnectionstatechange", () => {
+              const state = call.peerConnection.iceConnectionState;
+              if (state === "failed" || state === "disconnected" || state === "closed") {
+                console.warn(`Connection dropped for ${student.fullName}. Forcing reconnect...`);
+                call.close(); // Force kill the ghost connection
+              }
+            });
+          }
+
           call.on("close", () => {
             setStreams((prev) => { const newStreams = { ...prev }; delete newStreams[student.id]; return newStreams; });
-            activeCalls.current.delete(student.id);
+            activeCalls.current.delete(student.id); // Triggers the auto-redial on next loop
           });
-          call.on("error", () => { activeCalls.current.delete(student.id); });
+          
+          call.on("error", () => { 
+            activeCalls.current.delete(student.id); 
+          });
         }
       }
     });
